@@ -1349,30 +1349,6 @@ function count_held_note_voices(note chan) local(i v cnt)
   cnt;
 );
 
-function release_oldest_held_note_voice(note chan) local(i v best_idx best_age)
-(
-  best_idx = -1;
-  best_age = 100000000000;
-
-  i = 0;
-  while (i < MAX_VOICES) (
-    v = voice_base + i * VC_STRIDE;
-    (v[VC_ACTIVE] > 0 && v[VC_NOTE] == note && v[VC_CHAN] == chan && v[VC_STAGE] != ENV_RELEASE) ? (
-      v[VC_AGE] < best_age ? (
-        best_age = v[VC_AGE];
-        best_idx = i;
-      );
-    );
-    i += 1;
-  );
-
-  best_idx >= 0 ? (
-    v = voice_base + best_idx * VC_STRIDE;
-    release_voice_internal(v);
-    1;
-  ) : 0;
-);
-
 function reset_weight_buffers() local(i)
 (
   weight_ap1_pos = 0;
@@ -2437,6 +2413,30 @@ function release_voice_internal(v) local(donor donor_sm donor_tail body_start bo
       );
     );
   );
+);
+
+function release_oldest_held_note_voice(note chan) local(i v best_idx best_age)
+(
+  best_idx = -1;
+  best_age = 100000000000;
+
+  i = 0;
+  while (i < MAX_VOICES) (
+    v = voice_base + i * VC_STRIDE;
+    (v[VC_ACTIVE] > 0 && v[VC_NOTE] == note && v[VC_CHAN] == chan && v[VC_STAGE] != ENV_RELEASE) ? (
+      v[VC_AGE] < best_age ? (
+        best_age = v[VC_AGE];
+        best_idx = i;
+      );
+    );
+    i += 1;
+  );
+
+  best_idx >= 0 ? (
+    v = voice_base + best_idx * VC_STRIDE;
+    release_voice_internal(v);
+    1;
+  ) : 0;
 );
 
 function release_voice(note chan) local(target held guard idx)
@@ -4190,7 +4190,109 @@ gfx_transport_running = (play_state & 1) ? 1 : 0;
 gfx_transport_paused = (play_state & 2) ? 1 : 0;
 gfx_transport_stopped = play_state == 0;
 ((gfx_transport_paused || gfx_transport_stopped) && transport_running_prev) ? (
-  release_all_voices_transport(1);
+  // Inline hard panic for @gfx. Some JSFX builds do not resolve audio helper
+  // functions from @gfx during compile, so keep this side-effect-only clear local.
+  panic_i = 0;
+  while (panic_i < MAX_VOICES) (
+    panic_v = voice_base + panic_i * VC_STRIDE;
+    panic_v[VC_ENV] = 0;
+    panic_v[VC_STAGE] = ENV_OFF;
+    panic_v[VC_ACTIVE] = 0;
+    panic_i += 1;
+  );
+
+  panic_i = 0;
+  while (panic_i < NOTE_GATE_CELLS) (
+    note_gate_base[panic_i] = 0;
+    panic_i += 1;
+  );
+
+  weight_ap1_pos = 0;
+  weight_ap2_pos = 0;
+  weight_er_pos = 0;
+  weight_in_lp_l = 0;
+  weight_in_lp_r = 0;
+  weight_wet_lp_l = 0;
+  weight_wet_lp_r = 0;
+  panic_i = 0;
+  while (panic_i < AP_BUF_LEN) (
+    weight_ap1_l_base[panic_i] = 0;
+    weight_ap1_r_base[panic_i] = 0;
+    weight_ap2_l_base[panic_i] = 0;
+    weight_ap2_r_base[panic_i] = 0;
+    panic_i += 1;
+  );
+  panic_i = 0;
+  while (panic_i < ER_BUF_LEN) (
+    weight_er_l_base[panic_i] = 0;
+    weight_er_r_base[panic_i] = 0;
+    panic_i += 1;
+  );
+
+  clean_lp1_l = 0;
+  clean_lp2_l = 0;
+  clean_lp3_l = 0;
+  clean_lp4_l = 0;
+  clean_lp1_r = 0;
+  clean_lp2_r = 0;
+  clean_lp3_r = 0;
+  clean_lp4_r = 0;
+  clean_head_bus = 0;
+  clean_tail_bus = 0;
+  panic_i = 0;
+  while (panic_i < CLEAN_BANDS) (
+    clean_env_base[panic_i] = 0;
+    clean_floor_base[panic_i] = 0;
+    clean_gain_base[panic_i] = 1;
+    panic_i += 1;
+  );
+
+  room_lp1_l = 0;
+  room_lp2_l = 0;
+  room_lp3_l = 0;
+  room_lp4_l = 0;
+  room_lp1_r = 0;
+  room_lp2_r = 0;
+  room_lp3_r = 0;
+  room_lp4_r = 0;
+  room_fast_env = 0;
+  room_slow_env = 0;
+  room_g0 = 1;
+  room_g1 = 1;
+  room_g2 = 1;
+  room_g3 = 1;
+  room_g4 = 1;
+  room_head_bus = 0;
+  room_tail_bus = 0;
+
+  push_m_lp15 = 0;
+  push_m_lp32 = 0;
+  push_m_lp55 = 0;
+  push_s_lp15 = 0;
+  push_s_lp32 = 0;
+  push_s_lp55 = 0;
+  push_bodyE = 0;
+  push_formE = 0;
+  push_edgeE = 0;
+  push_airE = 0;
+  push_srcE = 0;
+  push_m_hiE = 0;
+  push_s_hiE = 0;
+  push_click_fastE = 0;
+  push_click_slowE = 0;
+  push_common_dB = 0;
+  push_side_dB = 0;
+  push_hot_dB = -150;
+  push_click_dB = 0;
+  push_side_rel_dB = -150;
+
+  transient_guard_s = 0;
+  dyn_env = 0;
+  dyn_comp_gain = 1;
+  dyn_lim_gain = 1;
+  mix_fast = 0;
+  mix_slow = 0;
+
   seam_bridge_env = 0;
   seam_bridge_idx = -1;
   seam_bridge_phase = -1;
