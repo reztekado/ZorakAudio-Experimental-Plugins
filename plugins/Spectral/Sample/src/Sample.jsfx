@@ -2486,7 +2486,131 @@ function release_all_voices_transport(hard) local(i v)
   );
 );
 
-function ui_button(id x y w h) local(hot clicked)
+function ui_panel(x y w h) local(i t)
+(
+  gfx_r = 0.000; gfx_g = 0.000; gfx_b = 0.000; gfx_a = 0.34;
+  gfx_rect(x + 3, y + 5, w, h, 1);
+
+  i = 0;
+  while (i < h) (
+    t = i / max(1, h - 1);
+    gfx_r = 0.045 + 0.020 * (1 - t);
+    gfx_g = 0.058 + 0.024 * (1 - t);
+    gfx_b = 0.078 + 0.030 * (1 - t);
+    gfx_a = 1;
+    gfx_line(x, y + i, x + w, y + i);
+    i += 1;
+  );
+
+  gfx_r = 0.18; gfx_g = 0.25; gfx_b = 0.32; gfx_a = 0.96;
+  gfx_rect(x, y, w, h, 0);
+  gfx_r = 0.40; gfx_g = 0.66; gfx_b = 0.94; gfx_a = 0.15;
+  gfx_line(x + 1, y + 1, x + w - 2, y + 1);
+  gfx_r = 0.02; gfx_g = 0.025; gfx_b = 0.032; gfx_a = 0.80;
+  gfx_line(x + 1, y + h - 1, x + w - 2, y + h - 1);
+
+  // small screw-like corner marks, purely decorative
+  gfx_r = 0.14; gfx_g = 0.19; gfx_b = 0.24; gfx_a = 0.85;
+  gfx_circle(x + 7, y + 7, 2, 1);
+  gfx_circle(x + w - 7, y + 7, 2, 1);
+  gfx_circle(x + 7, y + h - 7, 2, 1);
+  gfx_circle(x + w - 7, y + h - 7, 2, 1);
+);
+
+function ui_inner_panel(x y w h) local(i t)
+(
+  i = 0;
+  while (i < h) (
+    t = i / max(1, h - 1);
+    gfx_r = 0.030 + 0.018 * (1 - t);
+    gfx_g = 0.038 + 0.020 * (1 - t);
+    gfx_b = 0.052 + 0.030 * (1 - t);
+    gfx_a = 1;
+    gfx_line(x, y + i, x + w, y + i);
+    i += 1;
+  );
+  gfx_r = 0.11; gfx_g = 0.17; gfx_b = 0.22; gfx_a = 1;
+  gfx_rect(x, y, w, h, 0);
+  gfx_r = 0.29; gfx_g = 0.56; gfx_b = 0.82; gfx_a = 0.13;
+  gfx_line(x + 1, y + 1, x + w - 2, y + 1);
+);
+
+function ui_led(x y on cr cg cb) local(rr)
+(
+  rr = on ? 7 : 6;
+  gfx_r = 0; gfx_g = 0; gfx_b = 0; gfx_a = 0.52;
+  gfx_circle(x + 1, y + 1, rr + 2, 1);
+  gfx_r = cr; gfx_g = cg; gfx_b = cb; gfx_a = on ? 0.24 : 0.10;
+  gfx_circle(x, y, rr + 5, 1);
+  gfx_r = on ? cr : 0.13;
+  gfx_g = on ? cg : 0.16;
+  gfx_b = on ? cb : 0.20;
+  gfx_a = 1;
+  gfx_circle(x, y, rr, 1);
+  gfx_r = 1; gfx_g = 1; gfx_b = 1; gfx_a = on ? 0.42 : 0.10;
+  gfx_circle(x - rr * 0.25, y - rr * 0.30, rr * 0.34, 1);
+);
+
+function ui_hmeter(x y w h val cr cg cb) local(v i t)
+(
+  v = clamp01(val);
+  gfx_r = 0.030; gfx_g = 0.038; gfx_b = 0.052; gfx_a = 1;
+  gfx_rect(x, y, w, h, 1);
+  gfx_r = 0.11; gfx_g = 0.15; gfx_b = 0.18; gfx_a = 1;
+  gfx_rect(x, y, w, h, 0);
+  gfx_r = 0; gfx_g = 0; gfx_b = 0; gfx_a = 0.28;
+  gfx_rect(x + 1, y + 1, w - 2, h - 2, 1);
+  i = 0;
+  while (i < max(0, floor((w - 2) * v))) (
+    t = i / max(1, w - 2);
+    gfx_r = cr * (0.70 + 0.30 * t) + 0.10 * t;
+    gfx_g = cg * (0.72 + 0.25 * t) + 0.12 * t;
+    gfx_b = cb * (0.72 + 0.24 * t) + 0.16 * t;
+    gfx_a = 0.96;
+    gfx_line(x + 1 + i, y + 1, x + 1 + i, y + h - 2);
+    i += 1;
+  );
+  gfx_r = cr; gfx_g = cg; gfx_b = cb; gfx_a = 0.34;
+  gfx_rect(x + 1, y + 1, (w - 2) * v, h - 2, 0);
+);
+
+function ui_value_pill(x y w h) local(i t)
+(
+  i = 0;
+  while (i < h) (
+    t = i / max(1, h - 1);
+    gfx_r = 0.030 + 0.020 * (1 - t);
+    gfx_g = 0.040 + 0.025 * (1 - t);
+    gfx_b = 0.055 + 0.035 * (1 - t);
+    gfx_a = 1;
+    gfx_line(x, y + i, x + w, y + i);
+    i += 1;
+  );
+  gfx_r = 0.13; gfx_g = 0.21; gfx_b = 0.28; gfx_a = 1;
+  gfx_rect(x, y, w, h, 0);
+);
+
+function ui_draw_header_logo(cx cy s) local(i xx h)
+(
+  gfx_r = 0.02; gfx_g = 0.03; gfx_b = 0.04; gfx_a = 0.92;
+  gfx_circle(cx, cy, s * 1.05, 1);
+  gfx_r = 0.12; gfx_g = 0.18; gfx_b = 0.23; gfx_a = 1;
+  gfx_circle(cx, cy, s * 1.05, 0);
+  gfx_r = 0.24; gfx_g = 0.62; gfx_b = 0.96; gfx_a = 0.25;
+  gfx_circle(cx, cy, s * 1.25, 0);
+
+  i = -3;
+  while (i <= 3) (
+    xx = cx + i * s * 0.22;
+    h = s * (0.22 + 0.18 * (3 - abs(i)));
+    i == 0 ? h = s * 0.72;
+    gfx_r = 0.46; gfx_g = 0.82; gfx_b = 1.0; gfx_a = 0.90;
+    gfx_line(xx, cy - h, xx, cy + h);
+    i += 1;
+  );
+);
+
+function ui_button(id x y w h) local(hot clicked i t)
 (
   clicked = 0;
   hot = pt_in(x, y, w, h);
@@ -2501,19 +2625,32 @@ function ui_button(id x y w h) local(hot clicked)
     );
   );
 
-  (hot || ui_active == id) ? (
-    gfx_r = 0.24; gfx_g = 0.51; gfx_b = 0.76; gfx_a = 1;
-  ) : (
-    gfx_r = 0.16; gfx_g = 0.20; gfx_b = 0.26; gfx_a = 1;
+  gfx_r = 0; gfx_g = 0; gfx_b = 0; gfx_a = 0.35;
+  gfx_rect(x + 1, y + 2, w, h, 1);
+  i = 0;
+  while (i < h) (
+    t = i / max(1, h - 1);
+    gfx_r = (hot || ui_active == id) ? (0.115 - t * 0.030) : (0.085 - t * 0.022);
+    gfx_g = (hot || ui_active == id) ? (0.160 - t * 0.035) : (0.115 - t * 0.025);
+    gfx_b = (hot || ui_active == id) ? (0.220 - t * 0.045) : (0.155 - t * 0.030);
+    gfx_a = 1;
+    gfx_line(x, y + i, x + w, y + i);
+    i += 1;
   );
-  gfx_rect(x, y, w, h, 1);
-  gfx_r = 0.34; gfx_g = 0.42; gfx_b = 0.52; gfx_a = 1;
+  gfx_r = (hot || ui_active == id) ? 0.35 : 0.17;
+  gfx_g = (hot || ui_active == id) ? 0.62 : 0.25;
+  gfx_b = (hot || ui_active == id) ? 0.90 : 0.34;
+  gfx_a = (hot || ui_active == id) ? 1 : 0.95;
   gfx_rect(x, y, w, h, 0);
+  gfx_r = 0.55; gfx_g = 0.80; gfx_b = 1.00; gfx_a = (hot || ui_active == id) ? 0.40 : 0.12;
+  gfx_line(x + 2, y + 1, x + w - 3, y + 1);
+  gfx_r = 0.02; gfx_g = 0.03; gfx_b = 0.04; gfx_a = 0.70;
+  gfx_line(x + 2, y + h - 1, x + w - 3, y + h - 1);
 
   clicked;
 );
 
-function ui_knob(id x y r val vmin vmax defval wheel_step) local(hot norm ang px py vv dbl step_amt)
+function ui_knob(id x y r val vmin vmax defval wheel_step) local(hot norm ang px py vv dbl step_amt i a rr x1 y1 x2 y2 tickn active_n)
 (
   hot = ((mouse_x - x) * (mouse_x - x) + (mouse_y - y) * (mouse_y - y)) <= r * r;
   (hot || ui_active == id) ? ui_hover_id = id;
@@ -2569,31 +2706,70 @@ function ui_knob(id x y r val vmin vmax defval wheel_step) local(hot norm ang px
     );
   );
 
-  gfx_r = 0.11; gfx_g = 0.14; gfx_b = 0.18; gfx_a = 1;
-  gfx_circle(x, y, r, 1);
-  gfx_r = 0.22; gfx_g = 0.28; gfx_b = 0.35; gfx_a = 1;
-  gfx_circle(x, y, r, 0);
-
   norm = curve_norm(val, vmin, vmax, CURVE_LINEAR);
-  ang = (-0.75 + norm * 1.5) * 3.14159265358979;
-  px = x + cos(ang) * (r - 7);
-  py = y + sin(ang) * (r - 7);
 
-  gfx_r = hot || ui_active == id ? 0.85 : 0.68;
-  gfx_g = hot || ui_active == id ? 0.92 : 0.78;
-  gfx_b = 0.98;
+  gfx_r = 0; gfx_g = 0; gfx_b = 0; gfx_a = 0.48;
+  gfx_circle(x + 2, y + 3, r + 5, 1);
+  gfx_r = 0.020; gfx_g = 0.026; gfx_b = 0.034; gfx_a = 1;
+  gfx_circle(x, y, r + 4, 1);
+  gfx_r = 0.11; gfx_g = 0.15; gfx_b = 0.19; gfx_a = 1;
+  gfx_circle(x, y, r + 3, 0);
+
+  tickn = 32;
+  i = 0;
+  while (i <= tickn) (
+    a = (-0.76 + (i / tickn) * 1.52) * 3.14159265358979;
+    rr = (i % 4 == 0) ? r + 3 : r + 2;
+    x1 = x + cos(a) * rr;
+    y1 = y + sin(a) * rr;
+    x2 = x + cos(a) * (rr + ((i % 4 == 0) ? 4 : 2));
+    y2 = y + sin(a) * (rr + ((i % 4 == 0) ? 4 : 2));
+    gfx_r = 0.21; gfx_g = 0.28; gfx_b = 0.35; gfx_a = 0.70;
+    gfx_line(x1, y1, x2, y2);
+    i += 1;
+  );
+
+  active_n = floor(norm * tickn);
+  i = 0;
+  while (i <= active_n) (
+    a = (-0.76 + (i / tickn) * 1.52) * 3.14159265358979;
+    x1 = x + cos(a) * (r + 2);
+    y1 = y + sin(a) * (r + 2);
+    x2 = x + cos(a) * (r + 7);
+    y2 = y + sin(a) * (r + 7);
+    gfx_r = 0.05 + 0.23 * norm; gfx_g = 0.50 + 0.32 * norm; gfx_b = 1.00; gfx_a = 0.96;
+    gfx_line(x1, y1, x2, y2);
+    i += 1;
+  );
+
+  gfx_r = 0.045; gfx_g = 0.055; gfx_b = 0.070; gfx_a = 1;
+  gfx_circle(x, y, r, 1);
+  gfx_r = 0.18; gfx_g = 0.22; gfx_b = 0.27; gfx_a = 1;
+  gfx_circle(x - 1, y - 1, r * 0.76, 1);
+  gfx_r = 0.045; gfx_g = 0.050; gfx_b = 0.060; gfx_a = 0.88;
+  gfx_circle(x + 1, y + 2, r * 0.62, 1);
+  gfx_r = 0.32; gfx_g = 0.44; gfx_b = 0.54; gfx_a = 0.64;
+  gfx_circle(x - r * 0.25, y - r * 0.34, r * 0.22, 1);
+
+  ang = (-0.75 + norm * 1.5) * 3.14159265358979;
+  px = x + cos(ang) * (r - 5);
+  py = y + sin(ang) * (r - 5);
+  gfx_r = hot || ui_active == id ? 0.85 : 0.50;
+  gfx_g = hot || ui_active == id ? 0.95 : 0.76;
+  gfx_b = 1.00;
   gfx_a = 1;
   gfx_line(x, y, px, py);
+  gfx_circle(px, py, 2, 1);
 
   (hot || ui_active == id) ? (
-    gfx_r = 0.35; gfx_g = 0.60; gfx_b = 0.86; gfx_a = 1;
-    gfx_circle(x, y, r + 2, 0);
+    gfx_r = 0.22; gfx_g = 0.62; gfx_b = 1.0; gfx_a = 0.36;
+    gfx_circle(x, y, r + 10, 0);
   );
 
   val;
 );
 
-function ui_vslider(id x y w h val vmin vmax curve_mode defval wheel_step) local(hot norm py vv fillh dbl step_amt)
+function ui_vslider(id x y w h val vmin vmax curve_mode defval wheel_step) local(hot norm py vv fillh dbl step_amt i t tickn)
 (
   hot = pt_in(x, y, w, h);
   (hot || ui_active == id) ? ui_hover_id = id;
@@ -2647,23 +2823,43 @@ function ui_vslider(id x y w h val vmin vmax curve_mode defval wheel_step) local
     );
   );
 
-  gfx_r = 0.10; gfx_g = 0.13; gfx_b = 0.17; gfx_a = 1;
-  gfx_rect(x, y, w, h, 1);
-  gfx_r = 0.20; gfx_g = 0.25; gfx_b = 0.31; gfx_a = 1;
-  gfx_rect(x, y, w, h, 0);
-
   norm = curve_norm(val, vmin, vmax, curve_mode);
   fillh = clamp01(norm) * h;
-  gfx_r = 0.26; gfx_g = 0.56; gfx_b = 0.84; gfx_a = 0.88;
-  gfx_rect(x + 2, y + h - fillh + 2, w - 4, max(0, fillh - 4), 1);
+
+  gfx_r = 0; gfx_g = 0; gfx_b = 0; gfx_a = 0.40;
+  gfx_rect(x + 2, y + 2, w, h, 1);
+  ui_inner_panel(x, y, w, h);
+
+  tickn = 12;
+  i = 1;
+  while (i < tickn) (
+    t = y + h - (i / tickn) * h;
+    gfx_r = 0.24; gfx_g = 0.31; gfx_b = 0.38; gfx_a = 0.42;
+    gfx_line(x - 8, t, x - 2, t);
+    gfx_line(x + w + 2, t, x + w + 8, t);
+    i += 1;
+  );
+
+  gfx_r = 0.02; gfx_g = 0.10; gfx_b = 0.18; gfx_a = 0.65;
+  gfx_rect(x + 3, y + 3, w - 6, h - 6, 1);
+  gfx_r = 0.00; gfx_g = 0.43; gfx_b = 0.96; gfx_a = 0.24;
+  gfx_rect(x + 4, y + h - fillh + 2, w - 8, max(0, fillh - 4), 1);
+  gfx_r = 0.04; gfx_g = 0.62; gfx_b = 1.0; gfx_a = 0.92;
+  gfx_rect(x + 6, y + h - fillh + 4, w - 12, max(0, fillh - 8), 1);
 
   py = y + h - norm * h;
-  gfx_r = 0.90; gfx_g = 0.95; gfx_b = 1.0; gfx_a = 1;
-  gfx_rect(x - 2, py - 3, w + 4, 6, 1);
+  gfx_r = 0; gfx_g = 0; gfx_b = 0; gfx_a = 0.45;
+  gfx_rect(x - 6, py - 3, w + 12, 8, 1);
+  gfx_r = 0.78; gfx_g = 0.88; gfx_b = 0.98; gfx_a = 1;
+  gfx_rect(x - 5, py - 4, w + 10, 7, 1);
+  gfx_r = 0.30; gfx_g = 0.52; gfx_b = 0.70; gfx_a = 1;
+  gfx_rect(x - 5, py - 4, w + 10, 7, 0);
+  gfx_r = 1; gfx_g = 1; gfx_b = 1; gfx_a = 0.52;
+  gfx_line(x - 3, py - 3, x + w + 3, py - 3);
 
   hot || ui_active == id ? (
-    gfx_r = 0.34; gfx_g = 0.64; gfx_b = 0.90; gfx_a = 1;
-    gfx_rect(x - 2, y - 2, w + 4, h + 4, 0);
+    gfx_r = 0.25; gfx_g = 0.62; gfx_b = 1.0; gfx_a = 0.55;
+    gfx_rect(x - 4, y - 4, w + 8, h + 8, 0);
   );
 
   val;
@@ -2683,7 +2879,7 @@ function ui_shift_wheel_slope(id val defval) local(step_amt)
 
 function draw_curve_line(x1 y1 x2 y2 mode) local(i steps t u px py nx ny)
 (
-  steps = 16;
+  steps = 24;
   px = x1;
   py = y1;
   i = 1;
@@ -2712,35 +2908,33 @@ function draw_tooltip_box() local(tw1 th1 tw2 th2 tw th pad bx by bw bh)
   strlen(#tip_title) > 0 ? (
     pad = 10;
 
-    gfx_setfont(1, "Arial", 14, 0);
-    gfx_measurestr(#tip_title, tw1, th1);
     gfx_setfont(1, "Arial", 13, 0);
+    gfx_measurestr(#tip_title, tw1, th1);
+    gfx_setfont(1, "Arial", 12, 0);
     gfx_measurestr(#tip_body, tw2, th2);
 
     tw = max(tw1, tw2);
-    th = th1 + th2 + 6;
+    th = th1 + th2 + 7;
     bw = tw + pad * 2;
     bh = th + pad * 2;
 
     bx = clamp(mouse_x + 18, 8, gfx_w - bw - 8);
     by = clamp(mouse_y + 18, 8, gfx_h - bh - 8);
 
-    gfx_r = 0.02; gfx_g = 0.03; gfx_b = 0.05; gfx_a = 0.65;
-    gfx_rect(bx + 3, by + 4, bw, bh, 1);
-
-    gfx_r = 0.085; gfx_g = 0.10; gfx_b = 0.135; gfx_a = 0.96;
-    gfx_rect(bx, by, bw, bh, 1);
-    gfx_r = 0.28; gfx_g = 0.48; gfx_b = 0.72; gfx_a = 1;
+    gfx_r = 0; gfx_g = 0; gfx_b = 0; gfx_a = 0.55;
+    gfx_rect(bx + 3, by + 5, bw, bh, 1);
+    ui_inner_panel(bx, by, bw, bh);
+    gfx_r = 0.36; gfx_g = 0.68; gfx_b = 1.0; gfx_a = 0.55;
     gfx_rect(bx, by, bw, bh, 0);
 
-    gfx_setfont(1, "Arial", 14, 0);
-    gfx_r = 0.93; gfx_g = 0.96; gfx_b = 1.0; gfx_a = 1;
+    gfx_setfont(1, "Arial", 13, 0);
+    gfx_r = 0.92; gfx_g = 0.96; gfx_b = 1.0; gfx_a = 1;
     gfx_x = bx + pad; gfx_y = by + pad - 1;
     gfx_drawstr(#tip_title);
 
-    gfx_setfont(1, "Arial", 13, 0);
-    gfx_r = 0.73; gfx_g = 0.80; gfx_b = 0.90; gfx_a = 1;
-    gfx_x = bx + pad; gfx_y = by + pad + th1 + 3;
+    gfx_setfont(1, "Arial", 12, 0);
+    gfx_r = 0.70; gfx_g = 0.80; gfx_b = 0.92; gfx_a = 1;
+    gfx_x = bx + pad; gfx_y = by + pad + th1 + 4;
     gfx_drawstr(#tip_body);
   );
 );
@@ -4166,7 +4360,7 @@ push_amt > 0.0001 ? apply_push();
 spl0 += outL * out_trim;
 spl1 += outR * out_trim;
 
-@gfx 920 560
+@gfx 1180 740
 gfx_getchar();
 mouse_down = mouse_cap & 1;
 mouse_rdown = mouse_cap & 2;
@@ -4302,45 +4496,53 @@ gfx_transport_stopped = play_state == 0;
   transport_play_state_prev = play_state;
 );
 
-bg_r = 0.055; bg_g = 0.065; bg_b = 0.085;
-gfx_r = bg_r; gfx_g = bg_g; gfx_b = bg_b; gfx_a = 1;
-gfx_rect(0, 0, gfx_w, gfx_h, 1);
+// Flagship dark-metal visual pass
+bg_i = 0;
+while (bg_i < gfx_h) (
+  bg_t = bg_i / max(1, gfx_h - 1);
+  gfx_r = 0.014 + 0.028 * (1 - bg_t);
+  gfx_g = 0.018 + 0.034 * (1 - bg_t);
+  gfx_b = 0.026 + 0.050 * (1 - bg_t);
+  gfx_a = 1;
+  gfx_line(0, bg_i, gfx_w, bg_i);
+  bg_i += 1;
+);
 
 // Header
-x0 = 18; y0 = 18;
-header_h = 64;
-gfx_r = 0.09; gfx_g = 0.11; gfx_b = 0.14; gfx_a = 1;
-gfx_rect(x0, y0, gfx_w - 36, header_h, 1);
-gfx_r = 0.18; gfx_g = 0.23; gfx_b = 0.29; gfx_a = 1;
-gfx_rect(x0, y0, gfx_w - 36, header_h, 0);
+x0 = 10; y0 = 10;
+header_h = 84;
+ui_panel(x0, y0, gfx_w - 20, header_h);
 
-gfx_setfont(1, "Arial", 24, 0);
-gfx_x = x0 + 14; gfx_y = y0 + 10;
-gfx_r = 0.92; gfx_g = 0.96; gfx_b = 1.0; gfx_a = 1;
-gfx_drawstr("Load-and-Go MultiSampler");
-pt_in(x0, y0, gfx_w - 36, header_h) ? ui_hover_id = 1001;
+ui_draw_header_logo(x0 + 44, y0 + 42, 23);
+
+gfx_setfont(1, "Arial", 25, 0);
+gfx_x = x0 + 88; gfx_y = y0 + 19;
+gfx_r = 0.92; gfx_g = 0.97; gfx_b = 1.0; gfx_a = 1;
+gfx_drawstr("LOAD-AND-GO");
+gfx_setfont(1, "Arial", 17, 0);
+gfx_x = x0 + 286; gfx_y = y0 + 25;
+gfx_r = 0.50; gfx_g = 0.64; gfx_b = 0.78; gfx_a = 1;
+gfx_drawstr("MULTISAMPLER");
+pt_in(x0, y0, gfx_w - 20, header_h) ? ui_hover_id = 1001;
 
 gfx_setfont(1, "Arial", 14, 0);
-gfx_x = x0 + 16; gfx_y = y0 + 38;
-gfx_r = 0.62; gfx_g = 0.71; gfx_b = 0.82; gfx_a = 1;
+gfx_x = x0 + 88; gfx_y = y0 + 55;
+gfx_r = 0.63; gfx_g = 0.72; gfx_b = 0.84; gfx_a = 1;
 gfx_drawstr("Auto-polls slot 0, rescans on change, bank-wide triggering.");
 
-lamp_x = gfx_w - 180;
-lamp_y = y0 + 16;
+lamp_x = gfx_w - 238;
+lamp_y = y0 + 27;
 status_on = bank_loaded ? 1 : 0;
 bank_partial = bank_loaded && bank_selected_count > 0 && sample_count < bank_selected_count;
-gfx_r = bank_partial ? 0.90 : (status_on ? 0.28 : 0.18);
-gfx_g = bank_partial ? 0.66 : (status_on ? 0.80 : 0.20);
-gfx_b = bank_partial ? 0.22 : (status_on ? 0.44 : 0.20);
-gfx_a = 1;
-gfx_circle(lamp_x, lamp_y + 12, 8, 1);
-gfx_r = 0.85; gfx_g = 0.90; gfx_b = 0.96; gfx_a = 1;
-gfx_x = lamp_x + 16; gfx_y = lamp_y + 2;
+ui_led(lamp_x, lamp_y + 11, status_on && !bank_partial, bank_partial ? 0.95 : 0.18, bank_partial ? 0.68 : 0.90, bank_partial ? 0.20 : 0.44);
+gfx_setfont(1, "Arial", 14, 0);
+gfx_r = 0.86; gfx_g = 0.92; gfx_b = 0.98; gfx_a = 1;
+gfx_x = lamp_x + 22; gfx_y = lamp_y + 1;
 bank_partial ? sprintf(#ui_buf, "Bank partial") : (bank_loaded ? sprintf(#ui_buf, "Bank ready") : sprintf(#ui_buf, "No bank"));
 gfx_drawstr(#ui_buf);
 
-gfx_r = 0.72; gfx_g = 0.77; gfx_b = 0.84; gfx_a = 1;
-gfx_x = gfx_w - 180; gfx_y = y0 + 36;
+gfx_r = 0.62; gfx_g = 0.70; gfx_b = 0.82; gfx_a = 1;
+gfx_x = lamp_x + 22; gfx_y = lamp_y + 25;
 bank_partial ? (
   bank_memory_limited ? sprintf(#ui_buf, "Loaded %d/%d | %.0f MB", sample_count, bank_selected_count, pool_ram_mb) : (
     bank_cap_limited ? sprintf(#ui_buf, "Loaded %d/%d | pool max %d", sample_count, bank_selected_count, sample_pool_capacity) : sprintf(#ui_buf, "Loaded %d/%d | %.0f MB", sample_count, bank_selected_count, pool_ram_mb)
@@ -4354,35 +4556,32 @@ bank_partial ? (
 );
 gfx_drawstr(#ui_buf);
 
-m2e_lamp_x = gfx_w - 332;
-m2e_lamp_y = y0 + 16;
+m2e_lamp_x = gfx_w - 456;
+m2e_lamp_y = y0 + 27;
 m2e_recent = (m2e_clock_samps - m2e_last_any_cc_samps) <= m2e_detect_window_samps ? 1 : 0;
 m2e_on = m2e_mix > 0.02 ? 1 : 0;
-gfx_r = m2e_on ? 0.54 : (m2e_recent ? 0.76 : 0.20);
-gfx_g = m2e_on ? 0.64 : (m2e_recent ? 0.54 : 0.20);
-gfx_b = m2e_on ? 0.96 : (m2e_recent ? 0.22 : 0.22);
-gfx_a = 1;
-gfx_circle(m2e_lamp_x, m2e_lamp_y + 12, 8, 1);
-gfx_r = 0.85; gfx_g = 0.90; gfx_b = 0.96; gfx_a = 1;
-gfx_x = m2e_lamp_x + 16; gfx_y = m2e_lamp_y + 2;
+ui_led(m2e_lamp_x, m2e_lamp_y + 11, m2e_on, m2e_on ? 0.48 : (m2e_recent ? 0.82 : 0.18), m2e_on ? 0.62 : (m2e_recent ? 0.52 : 0.20), m2e_on ? 1.00 : (m2e_recent ? 0.24 : 0.24));
+gfx_setfont(1, "Arial", 14, 0);
+gfx_r = 0.84; gfx_g = 0.90; gfx_b = 0.98; gfx_a = 1;
+gfx_x = m2e_lamp_x + 22; gfx_y = m2e_lamp_y + 1;
 m2e_on ? sprintf(#ui_buf, "FluxBridge live") : (m2e_recent ? sprintf(#ui_buf, "FluxBridge detect") : sprintf(#ui_buf, "FluxBridge idle"));
 gfx_drawstr(#ui_buf);
-gfx_r = 0.72; gfx_g = 0.77; gfx_b = 0.84; gfx_a = 1;
-gfx_x = m2e_lamp_x + 16; gfx_y = m2e_lamp_y + 36;
+gfx_r = 0.62; gfx_g = 0.70; gfx_b = 0.82; gfx_a = 1;
+gfx_x = m2e_lamp_x + 22; gfx_y = m2e_lamp_y + 25;
 sprintf(#ui_buf, "Auto-detect");
 gfx_drawstr(#ui_buf);
 
-pt_in(m2e_lamp_x - 8, m2e_lamp_y - 2, 160, 40) ? ui_hover_id = 1003;
-pt_in(lamp_x - 8, lamp_y - 2, 150, 40) ? ui_hover_id = 1002;
+pt_in(m2e_lamp_x - 8, m2e_lamp_y - 2, 170, 48) ? ui_hover_id = 1003;
+pt_in(lamp_x - 8, lamp_y - 2, 180, 48) ? ui_hover_id = 1002;
 
 // Panels - responsive layout
-panel_gap = 18;
-panel_total_w = gfx_w - 36;
-panel_total_h = gfx_h - 118;
+panel_gap = 10;
+panel_total_w = gfx_w - 20;
+panel_total_h = gfx_h - 112;
 
-left_x = 18; left_y = 100;
-left_w = clamp(floor(panel_total_w * 0.22), 200, 300);
-mid_w  = clamp(floor(panel_total_w * 0.31), 260, 430);
+left_x = 10; left_y = 104;
+left_w = clamp(floor(panel_total_w * 0.25), 240, 340);
+mid_w  = clamp(floor(panel_total_w * 0.34), 330, 470);
 right_w = panel_total_w - left_w - mid_w - panel_gap * 2;
 right_min_w = 300;
 right_target_max = panel_total_w >= 1280 ? 780 : 860;
@@ -4413,20 +4612,17 @@ left_h = panel_total_h;
 mid_h = panel_total_h;
 right_h = panel_total_h;
 
-gfx_r = 0.085; gfx_g = 0.10; gfx_b = 0.125; gfx_a = 1;
-gfx_rect(left_x, left_y, left_w, left_h, 1);
-gfx_rect(mid_x, mid_y, mid_w, mid_h, 1);
-gfx_rect(right_x, right_y, right_w, right_h, 1);
-gfx_r = 0.18; gfx_g = 0.23; gfx_b = 0.29; gfx_a = 1;
-gfx_rect(left_x, left_y, left_w, left_h, 0);
-gfx_rect(mid_x, mid_y, mid_w, mid_h, 0);
-gfx_rect(right_x, right_y, right_w, right_h, 0);
+ui_panel(left_x, left_y, left_w, left_h);
+ui_panel(mid_x, mid_y, mid_w, mid_h);
+ui_panel(right_x, right_y, right_w, right_h);
 
 // Left panel: bank overview
-gfx_setfont(1, "Arial", 18, 0);
-gfx_r = 0.90; gfx_g = 0.95; gfx_b = 1.0; gfx_a = 1;
-gfx_x = left_x + 14; gfx_y = left_y + 12;
-gfx_drawstr("Bank overview");
+gfx_setfont(1, "Arial", 16, 0);
+gfx_r = 0.88; gfx_g = 0.94; gfx_b = 1.0; gfx_a = 1;
+gfx_x = left_x + 18; gfx_y = left_y + 16;
+gfx_drawstr("BANK OVERVIEW");
+gfx_r = 0.10; gfx_g = 0.58; gfx_b = 1.0; gfx_a = 0.90; gfx_circle(left_x + 10, left_y + 25, 4, 1);
+gfx_r = 0.26; gfx_g = 0.62; gfx_b = 1.0; gfx_a = 0.35; gfx_line(left_x + 18, left_y + 39, left_x + left_w - 18, left_y + 39);
 
 gfx_setfont(1, "Arial", 14, 0);
 bank_selected_count > 0 && sample_count < bank_selected_count ? sprintf(#ui_buf, "%d/%d samples loaded", sample_count, bank_selected_count) : sprintf(#ui_buf, "%d samples loaded", sample_count);
@@ -4449,40 +4645,28 @@ gfx_x = left_x + 14; gfx_y = left_y + 82; gfx_drawstr(#ui_buf);
 pt_in(left_x + 10, left_y + 8, left_w - 20, 84) ? ui_hover_id = 1100;
 
 meter_x = left_x + 14; meter_y = left_y + 122; meter_w = left_w - 28; meter_h = 12;
-gfx_r = 0.12; gfx_g = 0.14; gfx_b = 0.18; gfx_a = 1;
-gfx_rect(meter_x, meter_y, meter_w, meter_h, 1);
-gfx_r = 0.24; gfx_g = 0.62; gfx_b = 0.89; gfx_a = 1;
-gfx_rect(meter_x, meter_y, meter_w * bank_pitchiness, meter_h, 1);
+ui_hmeter(meter_x, meter_y, meter_w, meter_h, bank_pitchiness, 0.16, 0.62, 1.00);
 gfx_r = 0.74; gfx_g = 0.80; gfx_b = 0.88; gfx_a = 1;
 gfx_x = meter_x; gfx_y = meter_y - 20;
 gfx_drawstr("Pitch confidence");
 pt_in(meter_x, meter_y - 22, meter_w, meter_h + 26) ? ui_hover_id = 1101;
 
 meter_y2 = meter_y + 52;
-gfx_r = 0.12; gfx_g = 0.14; gfx_b = 0.18; gfx_a = 1;
-gfx_rect(meter_x, meter_y2, meter_w, meter_h, 1);
-gfx_r = 0.33; gfx_g = 0.67; gfx_b = 0.54; gfx_a = 1;
-gfx_rect(meter_x, meter_y2, meter_w * bank_brightness, meter_h, 1);
+ui_hmeter(meter_x, meter_y2, meter_w, meter_h, bank_brightness, 0.20, 0.86, 0.58);
 gfx_r = 0.74; gfx_g = 0.80; gfx_b = 0.88; gfx_a = 1;
 gfx_x = meter_x; gfx_y = meter_y2 - 20;
 gfx_drawstr("Average brightness");
 pt_in(meter_x, meter_y2 - 22, meter_w, meter_h + 26) ? ui_hover_id = 1102;
 
 meter_y3 = meter_y2 + 52;
-gfx_r = 0.12; gfx_g = 0.14; gfx_b = 0.18; gfx_a = 1;
-gfx_rect(meter_x, meter_y3, meter_w, meter_h, 1);
-gfx_r = 0.62; gfx_g = 0.54; gfx_b = 0.86; gfx_a = 1;
-gfx_rect(meter_x, meter_y3, meter_w * bank_sharpness, meter_h, 1);
+ui_hmeter(meter_x, meter_y3, meter_w, meter_h, bank_sharpness, 0.64, 0.40, 1.00);
 gfx_r = 0.74; gfx_g = 0.80; gfx_b = 0.88; gfx_a = 1;
 gfx_x = meter_x; gfx_y = meter_y3 - 20;
 gfx_drawstr("Average attack focus");
 pt_in(meter_x, meter_y3 - 22, meter_w, meter_h + 26) ? ui_hover_id = 1103;
 
 map_x = left_x + 14; map_y = left_y + 250; map_w = left_w - 28; map_h = max(80, left_h - 266);
-gfx_r = 0.10; gfx_g = 0.12; gfx_b = 0.16; gfx_a = 1;
-gfx_rect(map_x, map_y, map_w, map_h, 1);
-gfx_r = 0.18; gfx_g = 0.23; gfx_b = 0.29; gfx_a = 1;
-gfx_rect(map_x, map_y, map_w, map_h, 0);
+ui_inner_panel(map_x, map_y, map_w, map_h);
 gfx_x = map_x; gfx_y = map_y - 22; gfx_r = 0.74; gfx_g = 0.80; gfx_b = 0.88;
 gfx_drawstr("Sample map");
 pt_in(map_x, map_y, map_w, map_h) ? (
@@ -4504,9 +4688,9 @@ sample_count > 0 ? (
     bh = 10 + (map_h - 20) * clamp01(0.15 + bright * 0.85);
     bx = map_x + i * bw;
     by = map_y + map_h - bh - 4;
-    gfx_r = lerp(0.18, 0.82, rootn);
-    gfx_g = lerp(0.32, 0.72, sharp);
-    gfx_b = lerp(0.50, 0.28, bright);
+    gfx_r = lerp(0.10, 0.95, rootn);
+    gfx_g = lerp(0.78, 0.48, rootn) * (0.78 + 0.22 * sharp);
+    gfx_b = lerp(0.35, 0.05, rootn) * (0.80 + 0.20 * (1 - bright));
     gfx_a = (i == last_sid) ? 1 : 0.82;
     gfx_rect(bx + 1, by, max(1, bw - 2), bh, 1);
     i += 1;
@@ -4518,17 +4702,28 @@ sample_count > 0 ? (
 );
 
 // Mid panel: AHDSR graph and controls
-gfx_setfont(1, "Arial", 18, 0);
-gfx_r = 0.90; gfx_g = 0.95; gfx_b = 1.0; gfx_a = 1;
-gfx_x = mid_x + 14; gfx_y = mid_y + 12;
-gfx_drawstr("Envelope");
+gfx_setfont(1, "Arial", 16, 0);
+gfx_r = 0.88; gfx_g = 0.94; gfx_b = 1.0; gfx_a = 1;
+gfx_x = mid_x + 18; gfx_y = mid_y + 16;
+gfx_drawstr("ENVELOPE");
+gfx_r = 0.10; gfx_g = 0.58; gfx_b = 1.0; gfx_a = 0.90; gfx_circle(mid_x + 10, mid_y + 25, 4, 1);
+gfx_r = 0.26; gfx_g = 0.62; gfx_b = 1.0; gfx_a = 0.35; gfx_line(mid_x + 18, mid_y + 39, mid_x + mid_w - 18, mid_y + 39);
 pt_in(mid_x, mid_y, mid_w, 34) ? ui_hover_id = 1300;
 
 graph_x = mid_x + 16; graph_y = mid_y + 48; graph_w = mid_w - 32; graph_h = 190;
-gfx_r = 0.10; gfx_g = 0.12; gfx_b = 0.16; gfx_a = 1;
-gfx_rect(graph_x, graph_y, graph_w, graph_h, 1);
-gfx_r = 0.18; gfx_g = 0.23; gfx_b = 0.29; gfx_a = 1;
-gfx_rect(graph_x, graph_y, graph_w, graph_h, 0);
+ui_inner_panel(graph_x, graph_y, graph_w, graph_h);
+grid_i = 1;
+while (grid_i < 8) (
+  gfx_r = 0.12; gfx_g = 0.27; gfx_b = 0.38; gfx_a = 0.22;
+  gfx_line(graph_x + (graph_w * grid_i / 8), graph_y + 8, graph_x + (graph_w * grid_i / 8), graph_y + graph_h - 8);
+  grid_i += 1;
+);
+grid_i = 1;
+while (grid_i < 5) (
+  gfx_r = 0.12; gfx_g = 0.27; gfx_b = 0.38; gfx_a = 0.20;
+  gfx_line(graph_x + 8, graph_y + (graph_h * grid_i / 5), graph_x + graph_w - 8, graph_y + (graph_h * grid_i / 5));
+  grid_i += 1;
+);
 
 an = curve_norm(slider2, 0.1, 500, CURVE_TIME);
 hn = slider20 <= 0.5 ? 0 : curve_norm(max(slider20, 1), 1, 2000, CURVE_TIME);
@@ -4547,12 +4742,19 @@ gfx_r = 0.18; gfx_g = 0.22; gfx_b = 0.28; gfx_a = 1;
 gfx_line(graph_x + 14, graph_y + graph_h - 18, graph_x + graph_w - 14, graph_y + graph_h - 18);
 gfx_line(graph_x + 14, graph_y + 18, graph_x + 14, graph_y + graph_h - 18);
 
-gfx_r = 0.32; gfx_g = 0.67; gfx_b = 0.92; gfx_a = 1;
+gfx_r = 0.05; gfx_g = 0.45; gfx_b = 1.00; gfx_a = 0.25;
+draw_curve_line(p0x - 1, p0y, p1x - 1, p1y, env_segment_slope(attack_slope_pct, ENV_RISE));
+gfx_line(p1x - 1, p1y, p2x - 1, p2y);
+draw_curve_line(p2x - 1, p2y, p3x - 1, p3y, env_segment_slope(decay_slope_pct, ENV_FALL));
+gfx_line(p3x - 1, p3y, p4x - 1, p4y);
+draw_curve_line(p4x - 1, p4y, p5x - 1, p5y, env_segment_slope(release_slope_pct, ENV_FALL));
+gfx_r = 0.36; gfx_g = 0.78; gfx_b = 1.00; gfx_a = 1;
 draw_curve_line(p0x, p0y, p1x, p1y, env_segment_slope(attack_slope_pct, ENV_RISE));
 gfx_line(p1x, p1y, p2x, p2y);
 draw_curve_line(p2x, p2y, p3x, p3y, env_segment_slope(decay_slope_pct, ENV_FALL));
 gfx_line(p3x, p3y, p4x, p4y);
 draw_curve_line(p4x, p4y, p5x, p5y, env_segment_slope(release_slope_pct, ENV_FALL));
+gfx_circle(p1x, p1y, 3, 1); gfx_circle(p3x, p3y, 3, 1); gfx_circle(p5x, p5y, 3, 1);
 
 for_y = graph_y + graph_h - 18 - (graph_h - 36) * sustain_level;
 gfx_r = 0.26; gfx_g = 0.52; gfx_b = 0.74; gfx_a = 0.6;
@@ -4601,10 +4803,12 @@ gfx_x = track_x + (track_w - 7) * 0.5; gfx_y = adsr_y + adsr_h + 12; gfx_r = 0.8
 sprintf(#ui_buf, "%.0f", slider5); gfx_x = track_x + (track_w - 18) * 0.5; gfx_y = adsr_y - 20; gfx_r = 0.70; gfx_g = 0.78; gfx_b = 0.88; gfx_drawstr(#ui_buf);
 
 // Right panel: playback controls
-gfx_setfont(1, "Arial", 18, 0);
-gfx_r = 0.90; gfx_g = 0.95; gfx_b = 1.0; gfx_a = 1;
-gfx_x = right_x + 14; gfx_y = right_y + 12;
-gfx_drawstr("Playback");
+gfx_setfont(1, "Arial", 16, 0);
+gfx_r = 0.88; gfx_g = 0.94; gfx_b = 1.0; gfx_a = 1;
+gfx_x = right_x + 18; gfx_y = right_y + 16;
+gfx_drawstr("PLAYBACK");
+gfx_r = 0.10; gfx_g = 0.58; gfx_b = 1.0; gfx_a = 0.90; gfx_circle(right_x + 10, right_y + 25, 4, 1);
+gfx_r = 0.26; gfx_g = 0.62; gfx_b = 1.0; gfx_a = 0.35; gfx_line(right_x + 18, right_y + 39, right_x + right_w - 18, right_y + 39);
 
 right_inner_x = right_x + 14;
 right_inner_w = max(160, right_w - 28);
@@ -4668,13 +4872,13 @@ knob_panel_top = btn_y3 + btn_h + 18;
 knob_panel_bottom = right_y + right_h - 18;
 knob_area_h = max(140, knob_panel_bottom - knob_panel_top);
 knob_count = 15;
-knob_cols = right_inner_w >= 720 ? 6 : (right_inner_w >= 460 ? 4 : (right_inner_w >= 320 ? 3 : 2));
+knob_cols = right_inner_w >= 320 ? 3 : 2;
 knob_rows = floor((knob_count + knob_cols - 1) / knob_cols);
 knob_col_gap = clamp(floor(right_inner_w * 0.016), 10, 16);
 knob_row_gap = 16;
 cell_w = (right_inner_w - knob_col_gap * max(0, knob_cols - 1)) / knob_cols;
 cell_h = floor((knob_area_h - knob_row_gap * max(0, knob_rows - 1)) / max(1, knob_rows));
-cell_h = min(cell_h, knob_cols >= 6 ? 132 : 116);
+cell_h = min(cell_h, 112);
 kb_r = clamp(min(cell_w * 0.18, cell_h * 0.24), 18, knob_cols >= 6 ? 24 : 22);
 
 // Pitch
