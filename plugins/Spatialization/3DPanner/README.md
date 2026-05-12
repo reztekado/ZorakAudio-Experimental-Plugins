@@ -3,7 +3,7 @@
 ## What it is
 3DPanner is a **headphone-focused, mouse-first perceptual 3D panner**.
 
-The current build is **Hyperreal 3D Panner V6.1 — Perceptual Position + Visual Cues**. It is built around direct object placement instead of raw degree dialing.
+The current build is **Hyperreal 3D Panner V6.5 — UI-Only Perceptual Position + Side Drawer Manager IPC**. It is built around direct object placement instead of raw degree dialing, with optional subscription to **3DPannerManager** for shared camera rotation.
 
 The source combines several perceptual cues:
 
@@ -17,9 +17,49 @@ The source combines several perceptual cues:
 - room and early-bounce cues
 - micro motion for static-source stability
 - Automation Safe smoothing
+- DSP-JSFX `gmem` / `msg_*` manager-link communication
 - a canvas-based UI for direct placement and visual feedback
 
 It is not just a left/right pan with a width knob. It separates **where the object appears visually** from **how hard the spatial cue stack fires**.
+
+---
+
+## Manager link / scene camera workflow
+
+V6.5 keeps standalone use clean. The native sliders are hidden and used only as the saved/automation backend. Manager / IPC setup is opt-in and lives in the **Scene Link side drawer**, opened from the small `SCN LNK` tab.
+
+### Scene Bus
+Shared DSP-JSFX bus namespace. This must match the **3DPannerManager** Scene Bus.
+
+### Object Name
+Human-readable object name for the communication layer / peer registry. Routing still uses numeric instance IDs and Object IDs.
+
+### Object ID
+Stable scene object ID. Give each mapped object a unique ID unless you intentionally want several sound layers to represent the same object.
+
+### Target Manager ID
+Manager channel to follow on the Scene Bus. This lets several 3DPannerManager instances coexist without every panner following the same one.
+
+### Manager Link
+Disabled by default. When enabled from the side drawer, this panner follows the shared manager camera rotation. The panner's local placement becomes its fixed world/object position.
+
+### Manager Amount
+Amount of the manager camera transform applied to this object. 100% is normal scene behavior. 0% behaves like standalone while still keeping the manager section configured.
+
+Basic scene setup:
+
+```text
+1. Add one 3DPannerManager.
+2. Set Manager Scene Bus.
+3. Add 3DPanner instances.
+4. Give each panner the same Scene Bus.
+5. Assign Object IDs and Object Names.
+6. Set Target Manager ID to the manager channel you want, then enable Manager Link.
+7. Place each object once.
+8. Automate Manager Camera Rotation.
+```
+
+Communication uses the repository DSP-JSFX runtime API: `comm_join`, `instance_set_name`, `msg_subscribe`, `msg_advertise`, `msg_send`, `msg_recv`, `gmem_attach_size`, and shared `gmem[]`. Scene Bus and Object Name are edited through custom GFX text boxes; Enter commits, Escape cancels, and Backspace/Delete remove characters.
 
 ---
 
@@ -58,7 +98,7 @@ Positive values place the object toward the front wall. Negative values place it
 ### Distance
 How close or far the source feels.
 
-V6.1 uses a tighter, higher-resolution distance range than the older raw-distance model, so small movements are easier to dial in.
+V6 uses a tighter, higher-resolution distance range than the older raw-distance model, so small movements are easier to dial in.
 
 ### Spatial Throw
 Spatial cue intensity.
@@ -197,7 +237,7 @@ These set the visual object placement. Spatial Throw still controls how aggressi
 ## Notes
 The current UI is designed around object placement, not degree management.
 
-Older versions exposed raw **Azimuth** and **Externalize** as primary controls. V6.1 replaces that workflow with **Lateral**, **Depth Front/Rear**, **Distance**, **Spatial Throw**, and **Push Out**.
+Older versions exposed raw **Azimuth** and **Externalize** as primary controls. V6 replaces that workflow with **Lateral**, **Depth Front/Rear**, **Distance**, **Spatial Throw**, and **Push Out**.
 
 This is an intentional compatibility break. Presets from older versions should be rebuilt by ear instead of copied blindly.
 
@@ -205,3 +245,24 @@ This is an intentional compatibility break. Presets from older versions should b
 
 ## In one sentence
 3DPanner places a headphone source as an object in a perceptual room, then lets you control how strongly that placement, distance, size, room, and outside-head cues are expressed.
+
+
+## UI-only notes
+
+V6.5 hides native sliders with JSFX hidden-parameter labels plus `slider_show()`. The GFX UI writes the same slider variables, so preset recall, project state, and automation-backed numeric values still work.
+
+Visible GFX-only controls now include:
+
+```text
+Scene Link side drawer
+Scene Bus text box
+Object Name text box
+Object ID stepper
+Manager Link toggle
+Manager Amount mini-slider
+Automation Safe toggle
+Main quick-control lanes
+Advanced Cue Curve / Smooth / Room Size lanes
+```
+
+Text input is intentionally simple ASCII for stable bus and instance names.

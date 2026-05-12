@@ -3144,6 +3144,19 @@ public:
         stringSliderSeq[(size_t) index0].fetch_add (1u, std::memory_order_acq_rel);
     }
 
+
+    bool isStringSliderAliasVarIndex (int varIndex) const noexcept
+    {
+        if (varIndex < 0)
+            return false;
+
+        for (size_t i = 0; i < sliderAliasVarIndex.size(); ++i)
+            if (sliderStringUsed[i] && sliderAliasVarIndex[i] == varIndex)
+                return true;
+
+        return false;
+    }
+
    #if defined(ZA_JSFX_CORRECTNESS_CHECK) && ZA_JSFX_CORRECTNESS_CHECK
     bool hasCorrectnessMonitor() const noexcept { return correctnessRuntime != nullptr; }
     juce::String getCorrectnessStatusText() const
@@ -12326,7 +12339,43 @@ private:
 
         interp->setMouse (inputCopy.mouseX, inputCopy.mouseY, inputCopy.mouseCap,
                           inputCopy.pendingWheel, inputCopy.pendingHWheel);
+
+        // Keep @gfx named string variables for string sliders synchronized with
+        // the host-backed string-slider store before the script frame runs.
+        // This makes custom @gfx text boxes and native string sliders agree.
+        for (const auto& sd : processor.getJsfxSliderDecls())
+        {
+            if (! sd.isString || sd.index0 < 0 || sd.index0 >= 64 || sd.varName.isEmpty())
+                continue;
+
+            interp->syncStringVarUtf8 (sd.varName.toRawUTF8(),
+                                       processor.getStringSliderText (sd.index0));
+        }
+
         interp->renderFrame (w, h, s);
+
+        // Read any @gfx-authored string-slider alias changes back into the
+        // processor's authoritative string-slider store. The audio thread will
+        // apply them at the next block via applyStringSlidersToState().
+        bool stringSliderChangedFromGfx = false;
+        for (const auto& sd : processor.getJsfxSliderDecls())
+        {
+            if (! sd.isString || sd.index0 < 0 || sd.index0 >= 64 || sd.varName.isEmpty())
+                continue;
+
+            juce::String gfxText;
+            if (! interp->readStringVarUtf8 (sd.varName.toRawUTF8(), gfxText))
+                continue;
+
+            gfxText = gfxText.substring (0, 1024);
+            if (gfxText != processor.getStringSliderText (sd.index0))
+            {
+                processor.setStringSliderText (sd.index0, gfxText);
+                stringSliderChangedFromGfx = true;
+            }
+        }
+        if (stringSliderChangedFromGfx)
+            wrotePersistentVmState = true;
 
         if (captureStateWrites)
         {
@@ -12344,6 +12393,12 @@ private:
 
                 if (a == b) continue;
                 if (std::isnan (a) && std::isnan (b)) continue;
+
+                // String slider aliases are opaque string handles. Do not
+                // mirror the @gfx VM's numeric handle back into the DSP VM; the
+                // UTF-8 text bridge above owns those updates.
+                if (processor.isStringSliderAliasVarIndex (i))
+                    continue;
 
                 wrotePersistentVmState = true;
                 processor.enqueueGfxVarWrite (i, b);

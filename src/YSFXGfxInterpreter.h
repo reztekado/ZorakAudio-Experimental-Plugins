@@ -763,6 +763,71 @@ public:
       dst[i] = sliderPtrs[(size_t)i] ? (double)*sliderPtrs[(size_t)i] : 0.0;
   }
 
+
+  bool syncStringVarUtf8(const char* name, const juce::String& text)
+  {
+    if (!name || !*name || !m_string_context) return false;
+
+    EEL_F alt = 0.0;
+    EEL_F* ptr = nullptr;
+
+    // String slider aliases such as #scene_bus are not numeric NSEEL vars.
+    // Resolve them through the EEL string context, otherwise a UI edit can
+    // accidentally write user string 0 instead of the named string storage.
+    if (name[0] == '#')
+      ptr = m_string_context->GetNamedVar(name, true, &alt);
+    else
+    {
+      ptr = get_var(name);
+      if (!ptr)
+        ptr = m_string_context->GetNamedVar(name, true, &alt);
+    }
+
+    if (!ptr)
+      return false;
+
+    void* opaque = this;
+    EEL_STRING_MUTEXLOCK_SCOPE
+    EEL_STRING_STORAGECLASS* wr = nullptr;
+    EEL_STRING_GET_FOR_WRITE(*ptr, &wr);
+    if (!wr)
+      return false;
+
+    const auto utf8 = text.substring(0, 1024).toRawUTF8();
+    wr->SetRaw(utf8, (int) std::strlen(utf8));
+    return true;
+  }
+
+  bool readStringVarUtf8(const char* name, juce::String& out)
+  {
+    if (!name || !*name || !m_string_context) return false;
+
+    EEL_F alt = 0.0;
+    EEL_F* ptr = nullptr;
+    if (name[0] == '#')
+      ptr = m_string_context->GetNamedVar(name, false, &alt);
+    else
+    {
+      ptr = get_var(name);
+      if (!ptr)
+        ptr = m_string_context->GetNamedVar(name, false, &alt);
+    }
+
+    if (!ptr)
+      return false;
+
+    void* opaque = this;
+    EEL_STRING_MUTEXLOCK_SCOPE
+    EEL_STRING_STORAGECLASS* wr = nullptr;
+    const char* s = EEL_STRING_GET_FOR_INDEX(*ptr, &wr);
+    if (!s)
+      return false;
+
+    const int len = wr ? wr->GetLength() : (int) std::strlen(s);
+    out = juce::String::fromUTF8(s, len);
+    return true;
+  }
+
   void syncVars(const double* vars, int count)
   {
     for (const auto& bv : boundVars)
@@ -2022,6 +2087,17 @@ public:
   void readSliders(double* dst, int count) const
   {
     if (vm) vm->readSliders(dst, count);
+  }
+
+
+  bool syncStringVarUtf8(const char* name, const juce::String& text)
+  {
+    return vm ? vm->syncStringVarUtf8(name, text) : false;
+  }
+
+  bool readStringVarUtf8(const char* name, juce::String& out)
+  {
+    return vm ? vm->readStringVarUtf8(name, out) : false;
   }
 
   void readVars(double* dst, int count) const

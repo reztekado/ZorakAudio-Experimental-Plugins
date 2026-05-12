@@ -1,0 +1,10 @@
+{
+  "name": "3D Panner Manager",
+  "slug": "3DPannerManager",
+  "pluginCode": "P3DM",
+  "bundleId": "com.zorakaudio.experimental.3dpannermanager",
+  "clapId": "com.zorakaudio.experimental.3dpannermanager",
+  "clapFeatures": ["audio-effect", "utility"],
+  "pluginType": "jsfx",
+  "entry": "src/3DPannerManager.jsfx"
+}

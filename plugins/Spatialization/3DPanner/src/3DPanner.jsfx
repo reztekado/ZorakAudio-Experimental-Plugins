@@ -1,4 +1,4 @@
-desc:Hyperreal 3D Panner V6.2.1 (Perceptual Position + Visual Cues + Tooltip Alignment Fix)
+desc:Hyperreal 3D Panner V6.12.0 (Standalone/Manager Mode)
 
 // #HELP: Headphone-focused 3D panner using softened perceptual placement, microdelay, head shadow, pinna cues, distance loss, occlusion, and room cues.
 // #HELP: Drag the orange source in the stage canvas. X = Lateral, Y = Front/Rear. Mouse wheel changes Distance.
@@ -8,51 +8,75 @@ desc:Hyperreal 3D Panner V6.2.1 (Perceptual Position + Visual Cues + Tooltip Ali
 // #HELP: Automation Safe caps aggressive throw and lengthens smoothing for drawn automation.
 // #HELP: Visual cues: Size = orange halo/cloud, Distance = grey range rings/dashes, Push Out = listener shell, Room = cyan bounces/wall glow, Motion = green trail.
 // #HELP: Hover any canvas cue, snap chip, Automation Safe button, or quick-control lane for inline guidance. Tooltips use exact hit zones and dock away from controls.
-// #TOOLTIP: Perceptual object panner. Place the object visually, then scale how hard the cue stack fires.
+// #HELP: Manager Link is opt-in. New instances start in Standalone mode and only follow a Manager after switching Mode to Manager.
+// #HELP: V6.12.0 defaults to Standalone, adds an explicit Standalone/Manager mode, links by Manager Name, and keeps auto Object IDs.
+// #HELP: V6.2.2 stabilizes Occlusion by applying blocked-source coloration after localization, preventing opposite-ear flicker.
+// #TOOLTIP: UI-only perceptual object panner. Main controls stay standalone-clean; Manager mode is explicit and opt-in.
 
 options:want_all_kb
 options:gfx_hz=60
+options:idle=always
+options:ownership=auto
 
 in_pin:left input
 in_pin:right input
 out_pin:left output
 out_pin:right output
 
+// MANAGER / IPC
+// #TOOLTIP: Manager name to follow. Choose a 3DPannerManager by its Name; routing IDs are internal.
+slider1:#target_manager="Manager"<string>-Manager
+// #TOOLTIP: Human-readable object/source name shown in the manager.
+slider2:#object_name="Object"<string>-Name
+// #TOOLTIP: Internal auto-assigned object ID. Visible object identity is the Name.
+slider3:1<1,999,1>-Internal Object ID
+// #TOOLTIP: Standalone ignores managers; Manager follows the selected 3DPannerManager Name. Defaults to Standalone so loading a manager cannot hijack this panner.
+slider4:0<0,1,1{Standalone,Manager}>-Mode
+// #TOOLTIP: Internal full-follow amount. Manager Mode is the only user-facing follow switch.
+slider5:1<0,1,0.001>-Internal Manager Amount
+
 // POSITION
 // #TOOLTIP: Left/right object placement. Negative = left, positive = right.
-slider1:0<-1,1,0.001>-Lateral
+slider6:0<-1,1,0.001>-Lateral
 // #TOOLTIP: Physical distance throw. V6 uses a shorter, higher-resolution stage range than V5.
-slider2:0.25<0,1,0.001>-Distance
+slider7:0.25<0,1,0.001>-Distance
 // #TOOLTIP: Front/rear object placement. +1 = front wall, 0 = side plane, -1 = rear wall.
-slider3:0.82<-1,1,0.001>-Depth Front/Rear
+slider8:0.82<-1,1,0.001>-Depth Front/Rear
 
 // FEEL
 // #TOOLTIP: Spatial cue intensity. Higher = stronger ITD/head-shadow/pinna/side cues. Does not change loudness.
-slider4:0.58<0,1,0.001>-Spatial Throw
+slider9:0.58<0,1,0.001>-Spatial Throw
 // #TOOLTIP: Apparent source size. Lower = tighter point source; higher = wider / more diffuse image.
-slider5:0.10<0,1,0.001>-Size
+slider10:0.10<0,1,0.001>-Size
 // #TOOLTIP: Out-of-head realism cue strength. Formerly Externalize.
-slider6:0.42<0,1,0.001>-Push Out
+slider11:0.42<0,1,0.001>-Push Out
 // #TOOLTIP: Early reflection amount. Higher = more room cue and more externalization, less surgical precision.
-slider7:0.30<0,1,0.001>-Room
+slider12:0.30<0,1,0.001>-Room
 
 // MATERIAL / MOTION
 // #TOOLTIP: How blocked or hidden the source is. Higher = more muffled direct sound and more reflection dominance.
-slider8:0<0,1,0.001>-Occlusion
+slider13:0<0,1,0.001>-Occlusion
 // #TOOLTIP: Tiny motion added to keep static sources from collapsing inward on headphones.
-slider9:0.04<0,1,0.001>-Micro Motion
+slider14:0.04<0,1,0.001>-Micro Motion
 // #TOOLTIP: Final output trim after spatial processing.
-slider10:0<-18,12,0.1>-Output Trim (dB)
+slider15:0<-18,12,0.1>-Output Trim (dB)
 
 // AUTOMATION / ADVANCED
 // #TOOLTIP: Caps aggressive spatial throw and uses safer smoothing for automation curves.
-slider11:1<0,1,1>-Automation Safe
+slider16:1<0,1,1>-Automation Safe
 // #TOOLTIP: Perceptual compression curve. Higher values make moderate visual angles less extreme.
-slider12:2.00<1,3,0.01>-Cue Curve
+slider17:2.00<1,3,0.01>-Cue Curve
 // #TOOLTIP: Movement smoothing in milliseconds. Automation Safe enforces a higher minimum.
-slider13:90<5,250,1>-Motion Smooth (ms)
+slider18:90<5,250,1>-Motion Smooth (ms)
 // #TOOLTIP: Geometric room scale for the bounce model. Higher = larger room and longer early reflection timing.
-slider14:0.55<0,1,0.001>-Room Size
+slider19:0.55<0,1,0.001>-Room Size
+// #TOOLTIP: Internal cached manager slot. Panners route by Manager Name/IID, not this number.
+slider20:1<1,64,1>-Internal Manager Slot
+
+// V6.12.0 Manager model:
+//   Sliders 6/8 store the object's fixed world placement.
+//   Standalone mode ignores managers and does not appear as a linked object.
+//   Manager mode subscribes by Manager Name and renders effective position = object world angle - camera yaw.
 
 // V6 control model:
 //   Lateral + Depth Front/Rear = visual object coordinate.
@@ -62,14 +86,719 @@ slider14:0.55<0,1,0.001>-Room Size
 //   Cue Curve                 = how much mid-angle positions are softened.
 
 @init
+za_idle_mode = 4;
+za_keep_awake = 1;
+
+function p3d_clamp(x, lo, hi) (
+  x < lo ? lo : (x > hi ? hi : x);
+);
+
+function p3d_wrap_deg(a) (
+  while (a > 180) ( a -= 360; );
+  while (a < -180) ( a += 360; );
+  a;
+);
+
+
+function p3d_hash_string(s) local(i n c h) (
+  // Stable ASCII bus hash. This is a second routing guard in addition to
+  // comm_join/gmem_attach_size so Manager identity survives runtime namespace bugs.
+  h = 5381;
+  n = strlen(s);
+  i = 0;
+  loop(n,
+    c = str_getchar(s, i);
+    c < 0 ? c = 0;
+    h = h * 33 + c;
+    h = h - floor(h / 1000000007) * 1000000007;
+    i += 1;
+  );
+  h <= 0 ? h = 1;
+  h;
+);
+
+function p3d_scene_copy_to_string(slot, dest) local(base i n c) (
+  strcpy(dest, "");
+  slot >= 0 ? (
+    base = P3D_SCENE_BASE + slot * P3D_SCENE_STRIDE;
+    n = floor(gmem[base + P3D_SCENE_NAME_LEN_FIELD] + 0.5);
+    n < 0 ? n = 0;
+    n > P3D_SCENE_NAME_LEN ? n = P3D_SCENE_NAME_LEN;
+    i = 0;
+    loop(n,
+      c = floor(gmem[base + P3D_SCENE_CHAR_BASE + i] + 0.5);
+      (c >= 32 && c <= 126) ? (
+        sprintf(#p3d_char_tmp, "%c", c);
+        strcat(dest, #p3d_char_tmp);
+      );
+      i += 1;
+    );
+  );
+);
+
+function p3d_mgr_copy_scene_to_string(slot, dest) local(base i n c) (
+  strcpy(dest, "");
+  slot >= 0 ? (
+    base = P3D_MGR_BASE + slot * P3D_MGR_STRIDE;
+    n = floor(gmem[base + P3D_MGR_SCENE_NAME_LEN_FIELD] + 0.5);
+    n < 0 ? n = 0;
+    n > P3D_SCENE_NAME_LEN ? n = P3D_SCENE_NAME_LEN;
+    i = 0;
+    loop(n,
+      c = floor(gmem[base + P3D_MGR_SCENE_CHAR_BASE + i] + 0.5);
+      (c >= 32 && c <= 126) ? (
+        sprintf(#p3d_char_tmp, "%c", c);
+        strcat(dest, #p3d_char_tmp);
+      );
+      i += 1;
+    );
+  );
+  strlen(dest) <= 0 ? strcpy(dest, "Manager");
+);
+
+
+function p3d_mgr_slot_valid_idx(idx) local(base h hb mid iid active n stale) (
+  base = P3D_MGR_BASE + idx * P3D_MGR_STRIDE;
+  h = gmem[base + P3D_MGR_BUS_HASH];
+  hb = gmem[base + P3D_MGR_HB];
+  mid = floor(gmem[base + P3D_MGR_CHANNEL] + 0.5);
+  iid = gmem[base + P3D_MGR_IID];
+  active = gmem[base + P3D_MGR_ENABLE];
+  n = floor(gmem[base + P3D_MGR_SCENE_NAME_LEN_FIELD] + 0.5);
+  stale = (iid <= 0) || (h <= 0) || ((p3d_bus_tick - hb) > P3D_STALE_TICKS) || (active < 0.5);
+  (!stale && mid >= 1 && mid <= P3D_MAX_MANAGERS && n > 0) ? 1 : 0;
+);
+
+function p3d_scene_manager_alive(h, mid, miid) local(i base ok) (
+  ok = 0;
+  i = 0;
+  loop(P3D_MAX_MANAGER_SLOTS,
+    p3d_mgr_slot_valid_idx(i) ? (
+      base = P3D_MGR_BASE + i * P3D_MGR_STRIDE;
+      (abs(gmem[base + P3D_MGR_BUS_HASH] - h) < 0.5 && floor(gmem[base + P3D_MGR_CHANNEL] + 0.5) == mid && (miid <= 0 || abs(gmem[base + P3D_MGR_IID] - miid) < 0.5)) ? (
+        ok = 1;
+        i = P3D_MAX_MANAGER_SLOTS;
+      );
+    );
+    i += 1;
+  );
+  ok;
+);
+
+function p3d_scene_slot_valid(idx) local(base h hb active n mid miid stale) (
+  base = P3D_SCENE_BASE + idx * P3D_SCENE_STRIDE;
+  h = gmem[base + P3D_SCENE_HASH];
+  hb = gmem[base + P3D_SCENE_HB];
+  active = gmem[base + P3D_SCENE_ACTIVE];
+  n = floor(gmem[base + P3D_SCENE_NAME_LEN_FIELD] + 0.5);
+  mid = floor(gmem[base + P3D_SCENE_MANAGER_ID] + 0.5);
+  miid = gmem[base + P3D_SCENE_MANAGER_IID];
+  stale = (h <= 0) || ((p3d_bus_tick - hb) > P3D_SCENE_STALE_TICKS) || (active < 0.5);
+  (!stale && n > 0 && mid >= 1 && mid <= P3D_MAX_MANAGERS && p3d_scene_manager_alive(h, mid, miid)) ? 1 : 0;
+);
+
+function p3d_scene_slot_duplicate(idx) local(j base h mid miid b2 h2 mid2 miid2 dup) (
+  dup = 0;
+  base = P3D_SCENE_BASE + idx * P3D_SCENE_STRIDE;
+  h = gmem[base + P3D_SCENE_HASH];
+  mid = floor(gmem[base + P3D_SCENE_MANAGER_ID] + 0.5);
+  miid = gmem[base + P3D_SCENE_MANAGER_IID];
+  j = 0;
+  loop(idx,
+    p3d_scene_slot_valid(j) ? (
+      b2 = P3D_SCENE_BASE + j * P3D_SCENE_STRIDE;
+      h2 = gmem[b2 + P3D_SCENE_HASH];
+      mid2 = floor(gmem[b2 + P3D_SCENE_MANAGER_ID] + 0.5);
+      miid2 = gmem[b2 + P3D_SCENE_MANAGER_IID];
+      (abs(h2 - h) < 0.5 && mid2 == mid && abs(miid2 - miid) < 0.5) ? dup = 1;
+    );
+    j += 1;
+  );
+  dup;
+);
+
+
+function p3d_scene_select_nth(order) local(i base seen mid picked) (
+  seen = 0;
+  picked = 0;
+  i = 0;
+  loop(P3D_MAX_SCENES,
+    (p3d_scene_slot_valid(i) && !p3d_scene_slot_duplicate(i)) ? (
+      seen == order ? (
+        base = P3D_SCENE_BASE + i * P3D_SCENE_STRIDE;
+        p3d_scene_copy_to_string(i, #target_manager);
+        strlen(#target_manager) <= 0 ? strcpy(#target_manager, "Manager");
+        strcpy(#p3d_edit_manager, #target_manager);
+        mid = floor(gmem[base + P3D_SCENE_MANAGER_ID] + 0.5);
+        mid < 1 ? mid = 1;
+        mid > P3D_MAX_MANAGERS ? mid = P3D_MAX_MANAGERS;
+        slider20 = mid;
+        picked = 1;
+        i = P3D_MAX_SCENES;
+      );
+      seen += 1;
+    );
+    i += 1;
+  );
+  picked == 0 ? (
+    strcpy(#target_manager, "Manager");
+    strcpy(#p3d_edit_manager, #target_manager);
+    slider20 = 1;
+  );
+);
+
+function p3d_scene_copy_nth(order, dest) local(i seen) (
+  strcpy(dest, "");
+  seen = 0;
+  i = 0;
+  loop(P3D_MAX_SCENES,
+    (p3d_scene_slot_valid(i) && !p3d_scene_slot_duplicate(i)) ? (
+      seen == order ? (
+        p3d_scene_copy_to_string(i, dest);
+        i = P3D_MAX_SCENES;
+      );
+      seen += 1;
+    );
+    i += 1;
+  );
+  strlen(dest) <= 0 ? strcpy(dest, "Manager");
+);
+
+function p3d_scene_count_active() local(i n) (
+  n = 0;
+  i = 0;
+  loop(P3D_MAX_SCENES,
+    (p3d_scene_slot_valid(i) && !p3d_scene_slot_duplicate(i)) ? n += 1;
+    i += 1;
+  );
+  n;
+);
+
+function p3d_mgr_slot_duplicate(idx) local(j base h iid b2 h2 iid2 dup) (
+  dup = 0;
+  base = P3D_MGR_BASE + idx * P3D_MGR_STRIDE;
+  h = gmem[base + P3D_MGR_BUS_HASH];
+  iid = gmem[base + P3D_MGR_IID];
+  j = 0;
+  loop(idx,
+    p3d_mgr_slot_valid_idx(j) ? (
+      b2 = P3D_MGR_BASE + j * P3D_MGR_STRIDE;
+      h2 = gmem[b2 + P3D_MGR_BUS_HASH];
+      iid2 = gmem[b2 + P3D_MGR_IID];
+      (abs(iid2 - iid) < 0.5 || abs(h2 - h) < 0.5) ? dup = 1;
+    );
+    j += 1;
+  );
+  dup;
+);
+
+function p3d_ui_scene_store(dst_idx, scene_idx) local(src dst i n c) (
+  // The visible dropdown lists live managers by Manager Name. The legacy
+  // *_SCENE_* field names are now just the manager-name text payload.
+  src = P3D_MGR_BASE + scene_idx * P3D_MGR_STRIDE;
+  dst = p3d_ui_scene_base + dst_idx * p3d_ui_scene_stride;
+  n = floor(gmem[src + P3D_MGR_SCENE_NAME_LEN_FIELD] + 0.5);
+  n < 0 ? n = 0;
+  n > P3D_SCENE_NAME_LEN ? n = P3D_SCENE_NAME_LEN;
+  dst[0] = n;
+  dst[1] = floor(gmem[src + P3D_MGR_CHANNEL] + 0.5);
+  dst[2] = gmem[src + P3D_MGR_IID];
+  dst[3] = gmem[src + P3D_MGR_BUS_HASH];
+  i = 0;
+  loop(P3D_SCENE_NAME_LEN,
+    c = i < n ? floor(gmem[src + P3D_MGR_SCENE_CHAR_BASE + i] + 0.5) : 0;
+    dst[4 + i] = c;
+    i += 1;
+  );
+);
+
+function p3d_refresh_scene_ui_mirror() local(i out) (
+  out = 0;
+  i = 0;
+  loop(P3D_MAX_MANAGER_SLOTS,
+    (p3d_mgr_slot_valid_idx(i) && !p3d_mgr_slot_duplicate(i) && out < p3d_ui_scene_max) ? (
+      p3d_ui_scene_store(out, i);
+      out += 1;
+    );
+    i += 1;
+  );
+  p3d_ui_scene_count = out;
+);
+
+function p3d_ui_scene_count_active() (
+  p3d_ui_scene_count;
+);
+
+function p3d_ui_scene_copy_nth(order, dest) local(base i n c) (
+  strcpy(dest, "");
+  (order >= 0 && order < p3d_ui_scene_count) ? (
+    base = p3d_ui_scene_base + order * p3d_ui_scene_stride;
+    n = floor(base[0] + 0.5);
+    n < 0 ? n = 0;
+    n > P3D_SCENE_NAME_LEN ? n = P3D_SCENE_NAME_LEN;
+    i = 0;
+    loop(n,
+      c = floor(base[4 + i] + 0.5);
+      (c >= 32 && c <= 126) ? (
+        sprintf(#p3d_char_tmp, "%c", c);
+        strcat(dest, #p3d_char_tmp);
+      );
+      i += 1;
+    );
+  );
+  strlen(dest) <= 0 ? strcpy(dest, "Manager");
+);
+
+function p3d_ui_scene_manager_id(order) local(base mid) (
+  mid = 1;
+  (order >= 0 && order < p3d_ui_scene_count) ? (
+    base = p3d_ui_scene_base + order * p3d_ui_scene_stride;
+    mid = floor(base[1] + 0.5);
+  );
+  mid < 1 ? mid = 1;
+  mid > P3D_MAX_MANAGERS ? mid = P3D_MAX_MANAGERS;
+  mid;
+);
+
+function p3d_ui_scene_manager_iid(order) local(base iid) (
+  iid = 0;
+  (order >= 0 && order < p3d_ui_scene_count) ? (
+    base = p3d_ui_scene_base + order * p3d_ui_scene_stride;
+    iid = base[2];
+  );
+  iid;
+);
+
+function p3d_ui_scene_select_nth(order) local(mid) (
+  (order >= 0 && order < p3d_ui_scene_count) ? (
+    p3d_ui_scene_copy_nth(order, #target_manager);
+    strcpy(#p3d_edit_manager, #target_manager);
+    mid = p3d_ui_scene_manager_id(order);
+    slider20 = mid;
+    p3d_target_mgr_iid = p3d_ui_scene_manager_iid(order);
+    sliderchange(-1.0);
+  ) : (
+    strcpy(#target_manager, "Manager");
+    strcpy(#p3d_edit_manager, #target_manager);
+    slider20 = 1;
+    p3d_target_mgr_iid = 0;
+    sliderchange(-1.0);
+  );
+);
+
+function p3d_claim_object_slot() local(i idx sb sid hb stale best scan_start) (
+  // Object slots are keyed by runtime instance, not Object ID. Multiple panners
+  // can now share ID numbers on different buses without overwriting each other.
+  (p3d_slot_index >= 0 && p3d_slot_index < P3D_MAX_OBJECTS) ? (
+    sb = P3D_OBJ_BASE + p3d_slot_index * P3D_SLOT_STRIDE;
+    gmem[sb + P3D_SLOT_IID] == p3d_iid ? best = p3d_slot_index : best = -1;
+  ) : best = -1;
+
+  best < 0 ? (
+    i = 0;
+    loop(P3D_MAX_OBJECTS,
+      sb = P3D_OBJ_BASE + i * P3D_SLOT_STRIDE;
+      gmem[sb + P3D_SLOT_IID] == p3d_iid ? (
+        best = i;
+        i = P3D_MAX_OBJECTS;
+      );
+      i += 1;
+    );
+  );
+
+  best < 0 ? (
+    // Start the stale/free scan at an IID-derived offset so newly inserted
+    // panners do not all race for slot 1 in the same block.
+    scan_start = floor(abs(p3d_iid) + 0.5);
+    scan_start = scan_start - floor(scan_start / P3D_MAX_OBJECTS) * P3D_MAX_OBJECTS;
+    i = 0;
+    loop(P3D_MAX_OBJECTS,
+      idx = scan_start + i;
+      idx >= P3D_MAX_OBJECTS ? idx -= P3D_MAX_OBJECTS;
+      sb = P3D_OBJ_BASE + idx * P3D_SLOT_STRIDE;
+      sid = gmem[sb + P3D_SLOT_IID];
+      hb = gmem[sb + P3D_SLOT_HB];
+      stale = (sid <= 0) || ((p3d_bus_tick - hb) > P3D_STALE_TICKS);
+      stale ? (
+        best = idx;
+        i = P3D_MAX_OBJECTS;
+      );
+      i += 1;
+    );
+  );
+
+  best < 0 ? best = (p3d_obj_id - 1);
+  p3d_slot_index = best;
+  p3d_slot_index;
+);
+
+function p3d_find_manager_slot() local(i mb mhash mid miid best best_score hb score hash_match iid_match) (
+  best = -1;
+  best_score = -1;
+  i = 0;
+  loop(P3D_MAX_MANAGER_SLOTS,
+    p3d_mgr_slot_valid_idx(i) ? (
+      mb = P3D_MGR_BASE + i * P3D_MGR_STRIDE;
+      mhash = gmem[mb + P3D_MGR_BUS_HASH];
+      mid = floor(gmem[mb + P3D_MGR_CHANNEL] + 0.5);
+      miid = gmem[mb + P3D_MGR_IID];
+      hb = gmem[mb + P3D_MGR_HB];
+      hash_match = abs(mhash - p3d_bus_hash) < 0.5 ? 1 : 0;
+      iid_match = (p3d_target_mgr_iid > 0 && abs(miid - p3d_target_mgr_iid) < 0.5) ? 1 : 0;
+      hash_match ? (
+        // Manager Name is authoritative. The cached Manager IID only breaks
+        // ties between same-name managers selected from the dropdown.
+        score = hb + iid_match * 2000000;
+        score > best_score ? (
+          best = i;
+          best_score = score;
+          p3d_target_mgr = mid;
+          slider20 = mid;
+        );
+      );
+    );
+    i += 1;
+  );
+  best;
+);
+
+function p3d_angle_from_lat_fb(lat, fb) local(r side front ang) (
+  r = sqrt(lat*lat + fb*fb);
+  r < 0.0001 ? (
+    side = 0;
+    front = 1;
+  ) : (
+    side = lat / r;
+    front = fb / r;
+  );
+  ang = atan(side / (abs(front) + 0.000000000000000001)) * 180 / $pi;
+  (front < 0) ? (
+    side >= 0 ? ang = 180 - ang : ang = -180 - ang;
+  );
+  p3d_wrap_deg(ang);
+);
+
+function p3d_write_object_name(base, name) local(i n c) (
+  n = strlen(name);
+  n > P3D_OBJECT_NAME_LEN ? n = P3D_OBJECT_NAME_LEN;
+  gmem[base + P3D_SLOT_NAME_LEN_FIELD] = n;
+  i = 0;
+  loop(P3D_OBJECT_NAME_LEN,
+    c = i < n ? str_getchar(name, i) : 0;
+    c < 0 ? c = 0;
+    gmem[base + P3D_SLOT_NAME_CHAR_BASE + i] = c;
+    i += 1;
+  );
+);
+
+function p3d_ensure_bus_header() local(t) (
+  ((gmem[P3D_BUS_MAGIC] != P3D_MAGIC) || (gmem[P3D_BUS_VERSION] != P3D_VERSION)) ? (
+    gmem_zero(0, P3D_GMEM_SIZE);
+    gmem[P3D_BUS_MAGIC] = P3D_MAGIC;
+    gmem[P3D_BUS_VERSION] = P3D_VERSION;
+    gmem[P3D_BUS_TICK] = 0;
+  );
+  // Followers do not advance global time. The manager owns P3D_BUS_TICK, so
+  // stale thresholds remain stable regardless of how many panners are loaded.
+  t = gmem[P3D_BUS_TICK];
+  t < 0 ? t = 0;
+  p3d_bus_tick = t;
+);
+
+function p3d_publish_slot() local(sb) (
+  p3d_claim_object_slot();
+  p3d_obj_id = p3d_slot_index + 1;
+  p3d_obj_id < 1 ? p3d_obj_id = 1;
+  p3d_obj_id > 999 ? p3d_obj_id = 999;
+  slider3 = p3d_obj_id;
+  last_object_id = p3d_obj_id;
+  sb = P3D_OBJ_BASE + p3d_slot_index * P3D_SLOT_STRIDE;
+
+  gmem[sb + P3D_SLOT_IID] = p3d_iid;
+  gmem[sb + P3D_SLOT_HB] = p3d_bus_tick;
+  gmem[sb + P3D_SLOT_SEQ] = p3d_seq;
+  gmem[sb + P3D_SLOT_LINK] = p3d_link_enabled;
+  gmem[sb + P3D_SLOT_OBJ_ID] = p3d_obj_id;
+  gmem[sb + P3D_SLOT_WORLD_ANG] = p3d_world_ang;
+  gmem[sb + P3D_SLOT_WORLD_DIST_N] = p3d_world_dist_n;
+  gmem[sb + P3D_SLOT_WORLD_LAT] = p3d_world_lat;
+  gmem[sb + P3D_SLOT_WORLD_FB] = p3d_world_fb;
+  gmem[sb + P3D_SLOT_EFF_ANG] = p3d_effective_ang;
+  gmem[sb + P3D_SLOT_EFF_LAT] = p3d_effective_lat;
+  gmem[sb + P3D_SLOT_EFF_FB] = p3d_effective_fb;
+  // Use slider-backed values here so manager discovery still works while the
+  // audio engine has the instance asleep and only @gfx is ticking.
+  gmem[sb + P3D_SLOT_DIST_M] = last_dist_m;
+  gmem[sb + P3D_SLOT_SIZE] = slider10;
+  gmem[sb + P3D_SLOT_PUSH] = slider11;
+  gmem[sb + P3D_SLOT_ROOM] = slider12;
+  gmem[sb + P3D_SLOT_OCC] = slider13;
+  gmem[sb + P3D_SLOT_MANAGER_AMT] = p3d_manager_amt;
+  // Keep the registry slot active so the Manager can list this panner even
+  // while it is standalone. P3D_SLOT_LINK is the hard opt-in gate for camera control.
+  gmem[sb + P3D_SLOT_ACTIVE] = 1;
+  gmem[sb + P3D_SLOT_TARGET_MGR] = p3d_target_mgr;
+  gmem[sb + P3D_SLOT_BUS_HASH] = p3d_bus_hash;
+  gmem[sb + P3D_SLOT_TARGET_MGR_IID] = p3d_manager_iid;
+  p3d_write_object_name(sb, #object_name);
+);
+
+
+function p3d_service_registry() local(mb wr depth_delta side_delta topology dist_scale base_n d2 d3 ext_dist mgr_hb mgr_iid) (
+  // Shared-state service. @block calls the full path; @slider calls it with
+  // message sending disabled so name/position edits publish without waiting for
+  // an audio block.
+  p3d_ensure_bus_header();
+  p3d_refresh_scene_ui_mirror();
+  p3d_iid = instance_id();
+  p3d_link_enabled = slider4 >= 0.5 ? 1 : 0;
+  p3d_obj_id = floor(slider3 + 0.5);
+  p3d_obj_id < 1 ? p3d_obj_id = 1;
+  p3d_obj_id > 999 ? p3d_obj_id = 999;
+  p3d_manager_amt = p3d_clamp(slider5, 0, 1);
+  p3d_target_mgr = floor(slider20 + 0.5);
+  p3d_target_mgr < 1 ? p3d_target_mgr = 1;
+  p3d_target_mgr > P3D_MAX_MANAGERS ? p3d_target_mgr = P3D_MAX_MANAGERS;
+  p3d_target_mgr_iid < 0 ? p3d_target_mgr_iid = 0;
+
+  p3d_bus_hash = p3d_hash_string(#target_manager);
+  p3d_bus_hash != p3d_last_bus_hash ? (
+    p3d_last_bus_hash = p3d_bus_hash;
+    p3d_mgr_hold = 0;
+    p3d_cached_manager_hb = -1;
+    p3d_cached_manager_iid = 0;
+    p3d_target_mgr_iid = 0;
+    p3d_mgr_slot = -1;
+    p3d_slot_index = -1;
+  );
+
+  p3d_link_enabled ? (
+    p3d_mgr_slot = p3d_find_manager_slot();
+  ) : (
+    p3d_mgr_slot = -1;
+    p3d_mgr_hold = 0;
+    p3d_cached_manager_hb = -1;
+    p3d_cached_manager_iid = 0;
+    p3d_cached_manager_enabled = 0;
+    p3d_cached_camera_rot = 0;
+    p3d_cached_distance_scale = 1;
+  );
+  p3d_mgr_slot >= 0 ? (
+    mb = P3D_MGR_BASE + p3d_mgr_slot * P3D_MGR_STRIDE;
+    mgr_hb = gmem[mb + P3D_MGR_HB];
+    mgr_iid = gmem[mb + P3D_MGR_IID];
+    (abs(mgr_iid - p3d_cached_manager_iid) >= 0.5) ? p3d_cached_manager_hb = -1;
+    (mgr_hb != p3d_cached_manager_hb) ? (
+      p3d_cached_manager_hb = mgr_hb;
+      p3d_cached_manager_iid = mgr_iid;
+      p3d_target_mgr_iid = p3d_cached_manager_iid;
+      p3d_cached_manager_enabled = gmem[mb + P3D_MGR_ENABLE] >= 0.5 ? 1 : 0;
+      p3d_cached_camera_rot = gmem[mb + P3D_MGR_CAMERA_ROT] * gmem[mb + P3D_MGR_ROT_SCALE];
+      p3d_cached_distance_scale = gmem[mb + P3D_MGR_DIST_SCALE];
+      p3d_cached_distance_scale <= 0 ? p3d_cached_distance_scale = 1;
+      p3d_cached_distance_scale = p3d_clamp(p3d_cached_distance_scale, 0.25, 16.0);
+      p3d_mgr_hold = P3D_MANAGER_HOLD_BLOCKS;
+    ) : (
+      p3d_mgr_hold > 0 ? p3d_mgr_hold -= 1;
+    );
+  ) : (
+    p3d_mgr_hold > 0 ? p3d_mgr_hold -= 1;
+  );
+
+  p3d_manager_iid = p3d_cached_manager_iid;
+  p3d_manager_enabled = p3d_cached_manager_enabled;
+  p3d_manager_alive = p3d_mgr_hold > 0 ? 1 : 0;
+  p3d_link_active = (p3d_link_enabled && p3d_manager_alive && p3d_manager_enabled && (p3d_manager_amt > 0.0001)) ? 1 : 0;
+  p3d_camera_rot = p3d_cached_camera_rot;
+  p3d_distance_scale = p3d_cached_distance_scale;
+
+  p3d_world_lat = p3d_clamp(slider6, -1, 1);
+  p3d_world_fb = p3d_clamp(slider8, -1, 1);
+  p3d_world_dist_n = p3d_clamp(slider7, 0, 1);
+  wr = sqrt(p3d_world_lat*p3d_world_lat + p3d_world_fb*p3d_world_fb);
+  wr > 1 ? wr = 1;
+  p3d_world_ang = p3d_angle_from_lat_fb(p3d_world_lat, p3d_world_fb);
+  p3d_effective_ang = p3d_world_ang;
+  p3d_effective_lat = p3d_world_lat;
+  p3d_effective_fb = p3d_world_fb;
+  last_effective_dist_n = p3d_world_dist_n;
+
+  p3d_link_active ? (
+    p3d_effective_ang = p3d_wrap_deg(p3d_world_ang - p3d_camera_rot * p3d_manager_amt);
+    p3d_effective_lat = sin(p3d_effective_ang * $pi / 180) * wr;
+    p3d_effective_fb  = cos(p3d_effective_ang * $pi / 180) * wr;
+    depth_delta = p3d_effective_fb - p3d_world_fb;
+    side_delta = abs(p3d_effective_lat) - abs(p3d_world_lat);
+    topology = 1 - 0.42 * depth_delta * p3d_manager_amt + 0.10 * side_delta * p3d_manager_amt;
+    topology < 0.25 ? topology = 0.25;
+    topology > 4.00 ? topology = 4.00;
+    dist_scale = 1 + (p3d_distance_scale - 1) * p3d_manager_amt;
+    last_effective_dist_n = p3d_world_dist_n * dist_scale * topology;
+    last_effective_dist_n < 0 ? last_effective_dist_n = 0;
+    last_effective_dist_n > 4.0 ? last_effective_dist_n = 4.0;
+  );
+
+  last_manager_link = p3d_link_enabled;
+  last_manager_active = p3d_link_active;
+  last_manager_id = p3d_manager_iid;
+  last_object_id = p3d_obj_id;
+  last_world_az = p3d_world_ang;
+  last_effective_az = p3d_effective_ang;
+  last_effective_lat = p3d_effective_lat;
+  last_effective_fb = p3d_effective_fb;
+  last_camera_rot = p3d_camera_rot;
+
+  base_n = last_effective_dist_n;
+  base_n < 0 ? base_n = 0;
+  base_n > 4 ? base_n = 4;
+  d2 = min(base_n, 1);
+  d3 = d2*d2*d2;
+  d2 = d2*d2;
+  last_dist_m = 0.18 + 8.82*(0.72*d2 + 0.28*d3);
+  base_n > 1 ? (
+    ext_dist = base_n - 1;
+    last_dist_m += 8.0*ext_dist + 18.0*ext_dist*ext_dist;
+  );
+
+  p3d_seq += 1;
+  p3d_publish_slot();
+  p3d_allow_msg ? (p3d_link_enabled ? msg_send(#p3d_registry_bus, P3D_OP_PANNER_HEART, p3d_iid, p3d_obj_id, p3d_world_ang, p3d_effective_ang););
+);
+
+
+
+
+// --- 3DPannerManager shared bus protocol ---
+P3D_MAGIC = 30260611;
+P3D_VERSION = 10;
+P3D_MAX_OBJECTS = 128;
+P3D_BUS_MAGIC = 0;
+P3D_BUS_VERSION = 1;
+P3D_BUS_TICK = 2;
+P3D_BUS_MANAGER_IID = 3;
+P3D_BUS_MANAGER_HB = 4;
+P3D_BUS_MANAGER_ENABLE = 5;
+P3D_BUS_CAMERA_ROT = 6;
+P3D_BUS_ROT_SCALE = 7;
+P3D_BUS_DIST_SCALE = 8;
+P3D_BUS_SMOOTH_MS = 9;
+P3D_BUS_COORD_MODE = 10;
+P3D_BUS_LINKED_COUNT = 11;
+P3D_BUS_MANAGER_SEQ = 12;
+P3D_OBJ_BASE = 64;
+P3D_SLOT_STRIDE = 64;
+P3D_SLOT_IID = 0;
+P3D_SLOT_HB = 1;
+P3D_SLOT_SEQ = 2;
+P3D_SLOT_LINK = 3;
+P3D_SLOT_OBJ_ID = 4;
+P3D_SLOT_WORLD_ANG = 5;
+P3D_SLOT_WORLD_DIST_N = 6;
+P3D_SLOT_WORLD_LAT = 7;
+P3D_SLOT_WORLD_FB = 8;
+P3D_SLOT_EFF_ANG = 9;
+P3D_SLOT_EFF_LAT = 10;
+P3D_SLOT_EFF_FB = 11;
+P3D_SLOT_DIST_M = 12;
+P3D_SLOT_SIZE = 13;
+P3D_SLOT_PUSH = 14;
+P3D_SLOT_ROOM = 15;
+P3D_SLOT_OCC = 16;
+P3D_SLOT_MANAGER_AMT = 17;
+P3D_SLOT_ACTIVE = 18;
+P3D_STALE_TICKS = 240;
+P3D_MANAGER_HOLD_BLOCKS = 90;
+P3D_SLOT_TARGET_MGR = 19;
+P3D_SLOT_BUS_HASH = 20;
+P3D_SLOT_TARGET_MGR_IID = 21;
+P3D_SLOT_NAME_LEN_FIELD = 22;
+P3D_SLOT_NAME_CHAR_BASE = 24;
+P3D_OBJECT_NAME_LEN = 24;
+P3D_MAX_MANAGERS = 64;
+P3D_MAX_MANAGER_SLOTS = 64;
+P3D_MGR_BASE = P3D_OBJ_BASE + P3D_MAX_OBJECTS * P3D_SLOT_STRIDE;
+P3D_MGR_STRIDE = 64;
+P3D_MGR_IID = 0;
+P3D_MGR_HB = 1;
+P3D_MGR_ENABLE = 2;
+P3D_MGR_CAMERA_ROT = 3;
+P3D_MGR_ROT_SCALE = 4;
+P3D_MGR_DIST_SCALE = 5;
+P3D_MGR_SMOOTH_MS = 6;
+P3D_MGR_SEQ = 7;
+P3D_MGR_TRACKER = 8;
+P3D_MGR_BUS_HASH = 9;
+P3D_MGR_CHANNEL = 10;
+P3D_MGR_SCENE_NAME_LEN_FIELD = 11;
+P3D_MGR_SCENE_CHAR_BASE = 12;
+P3D_MAX_SCENES = 32;
+P3D_SCENE_NAME_LEN = 36;
+P3D_SCENE_BASE = P3D_MGR_BASE + P3D_MAX_MANAGER_SLOTS * P3D_MGR_STRIDE;
+P3D_SCENE_STRIDE = 48;
+P3D_SCENE_HASH = 0;
+P3D_SCENE_HB = 1;
+P3D_SCENE_MANAGER_ID = 2;
+P3D_SCENE_MANAGER_IID = 3;
+P3D_SCENE_ACTIVE = 4;
+P3D_SCENE_NAME_LEN_FIELD = 5;
+P3D_SCENE_CHAR_BASE = 8;
+P3D_SCENE_STALE_TICKS = 240;
+P3D_GMEM_SIZE = P3D_SCENE_BASE + P3D_MAX_SCENES * P3D_SCENE_STRIDE + 64;
+P3D_OP_MANAGER_STATE = 3101;
+P3D_OP_PANNER_HEART = 3102;
+
+strlen(#target_manager) <= 0 ? strcpy(#target_manager, "Manager");
+strlen(#object_name) <= 0 ? strcpy(#object_name, "Object");
+strcpy(#p3d_registry_bus, "ZorakAudio.3DPanner.Registry");
+comm_join(#p3d_registry_bus);
+instance_set_name(#object_name);
+instance_uid(#p3d_uid);
+msg_subscribe(#p3d_registry_bus);
+msg_advertise(#p3d_registry_bus, 1);
+gmem_attach_size(#p3d_registry_bus, P3D_GMEM_SIZE);
+
+p3d_iid = instance_id();
+p3d_seq = 0;
+p3d_bus_tick = 0;
+p3d_link_enabled = 0;
+p3d_link_active = 0;
+p3d_manager_alive = 0;
+p3d_manager_iid = 0;
+p3d_manager_amt = 1;
+p3d_camera_rot = 0;
+p3d_effective_ang = 0;
+p3d_world_ang = 0;
+p3d_last_manager_msg = 0;
+p3d_rx_manager_seq = 0;
+p3d_slot_index = -1;
+p3d_bus_hash = p3d_hash_string(#target_manager);
+p3d_last_bus_hash = p3d_bus_hash;
+p3d_mgr_slot = -1;
+p3d_mgr_hold = 0;
+p3d_cached_manager_iid = 0;
+p3d_cached_manager_enabled = 0;
+p3d_cached_manager_hb = -1;
+p3d_cached_camera_rot = 0;
+p3d_cached_distance_scale = 1;
+p3d_cached_rot_scale = 1;
+p3d_target_mgr_iid = 0;
+p3d_ui_scene_base = 65536;
+p3d_ui_scene_stride = 48;
+p3d_ui_scene_max = P3D_MAX_SCENES;
+p3d_ui_scene_count = 0;
+
 // --- delay buffers ---
 er_bufsize = 32768;
 er_mask = er_bufsize - 1;
 er_wpos = 0;
 
+erbuf = 0;
 itd_bufsize = 4096;
 itd_mask = itd_bufsize - 1;
 itd_wpos = 0;
+itdbuf = erbuf + er_bufsize;
+// Keep UI mirror memory out of the audio delay lines.
+p3d_ui_scene_base = itdbuf + itd_bufsize + 4096;
 
 loop_cnt = 0;
 loop(er_bufsize,
@@ -144,6 +873,14 @@ occ_lp = 0;
 occ_low_mem = 0;
 occ_ap_x1 = 0;
 occ_ap_y1 = 0;
+
+// Stable per-ear occlusion states.
+// V6.2.2 localizes first, then colors each ear, so occlusion does not create
+// a delayed/smeared mono event that can flicker in the opposite ear.
+occ_dir_lp_l = 0;
+occ_dir_lp_r = 0;
+occ_dir_low_l = 0;
+occ_dir_low_r = 0;
 
 // head-shadow split states
 l_low = 0;
@@ -228,60 +965,197 @@ ui_drag_start_x = 0;
 ui_drag_start_y = 0;
 ui_drag_start_v1 = 0;
 ui_drag_start_v2 = 0;
+ui_drag_start_v3 = 0;
 ui_drag_bar = 0;
 
+// V6.12 UI-only state. Main DSP controls are hidden; Manager/Name/Mode remain
+// host-visible while GFX widgets edit the same slider-backed state.
+ui_text_active = 0; // 0 none, 1 Manager, 2 Object Name
+ui_text_frames = 0;
+ui_text_select_all = 0;
+ui_drawer_open = 0; // Manager Link side drawer; closed by default so standalone use stays clean.
+ui_scene_menu = 0;
+strcpy(#p3d_edit_text, "");
+strcpy(#p3d_keychar, "");
+strcpy(#p3d_edit_manager, #target_manager);
+strcpy(#p3d_edit_name, #object_name);
+
+slider_show(1,1); slider_show(2,1); slider_show(3,0); slider_show(4,1); slider_show(5,0);
+slider_show(6,0); slider_show(7,0); slider_show(8,0); slider_show(9,0); slider_show(10,0);
+slider_show(11,0); slider_show(12,0); slider_show(13,0); slider_show(14,0); slider_show(15,0);
+slider_show(16,0); slider_show(17,0); slider_show(18,0); slider_show(19,0); slider_show(20,0);
+
+
+@slider
+strlen(#target_manager) <= 0 ? strcpy(#target_manager, "Manager");
+strlen(#object_name) <= 0 ? strcpy(#object_name, "Object");
+slider5 = 1;
+strcpy(#p3d_registry_bus, "ZorakAudio.3DPanner.Registry");
+comm_join(#p3d_registry_bus);
+instance_set_name(#object_name);
+msg_subscribe(#p3d_registry_bus);
+msg_advertise(#p3d_registry_bus, 1);
+gmem_attach_size(#p3d_registry_bus, P3D_GMEM_SIZE);
+p3d_rebind_pending = 0;
+p3d_bus_hash = p3d_hash_string(#target_manager);
+p3d_bus_hash != p3d_last_bus_hash ? (
+  p3d_last_bus_hash = p3d_bus_hash;
+  p3d_mgr_hold = 0;
+  p3d_cached_manager_hb = -1;
+  p3d_cached_manager_iid = 0;
+  p3d_target_mgr_iid = 0;
+  p3d_mgr_slot = -1;
+  p3d_slot_index = -1;
+);
+ui_text_active == 0 ? (
+  strcpy(#p3d_edit_manager, #target_manager);
+  strcpy(#p3d_edit_name, #object_name);
+);
+p3d_iid = instance_id();
+p3d_seq += 1;
+p3d_allow_msg = 0;
+p3d_service_registry();
 
 @block
+strlen(#target_manager) <= 0 ? strcpy(#target_manager, "Manager");
+strlen(#object_name) <= 0 ? strcpy(#object_name, "Object");
+slider5 = 1;
+p3d_rebind_pending ? (
+  strcpy(#p3d_registry_bus, "ZorakAudio.3DPanner.Registry");
+  comm_join(#p3d_registry_bus);
+  instance_set_name(#object_name);
+  msg_subscribe(#p3d_registry_bus);
+  msg_advertise(#p3d_registry_bus, 1);
+  gmem_attach_size(#p3d_registry_bus, P3D_GMEM_SIZE);
+  p3d_rebind_pending = 0;
+);
 // V6 perceptual-position mapping.
 // User-facing position is a stage coordinate; DSP receives a softened cue azimuth.
 
+// --- Manager bus state ---
+p3d_ensure_bus_header();
+p3d_refresh_scene_ui_mirror();
+p3d_iid = instance_id();
+p3d_link_enabled = slider4 >= 0.5 ? 1 : 0;
+p3d_obj_id = floor(slider3 + 0.5);
+p3d_obj_id < 1 ? p3d_obj_id = 1;
+p3d_obj_id > 999 ? p3d_obj_id = 999;
+p3d_manager_amt = p3d_clamp(slider5, 0, 1);
+
+p3d_target_mgr = floor(slider20 + 0.5);
+p3d_target_mgr < 1 ? p3d_target_mgr = 1;
+p3d_target_mgr > P3D_MAX_MANAGERS ? p3d_target_mgr = P3D_MAX_MANAGERS;
+p3d_target_mgr_iid < 0 ? p3d_target_mgr_iid = 0;
+
+p3d_bus_hash = p3d_hash_string(#target_manager);
+p3d_bus_hash != p3d_last_bus_hash ? (
+  p3d_last_bus_hash = p3d_bus_hash;
+  p3d_mgr_hold = 0;
+  p3d_cached_manager_hb = -1;
+  p3d_cached_manager_iid = 0;
+  p3d_target_mgr_iid = 0;
+  p3d_mgr_slot = -1;
+  p3d_slot_index = -1;
+);
+
+// Dynamic Manager lookup: visible Manager Name hash, with IID only as a same-name tie-breaker. This prevents
+// routing from falling back to an unrelated numeric manager index. Standalone
+// mode does not subscribe to, cache, or consume any manager transform.
+p3d_link_enabled ? (
+  p3d_mgr_slot = p3d_find_manager_slot();
+) : (
+  p3d_mgr_slot = -1;
+  p3d_mgr_hold = 0;
+  p3d_cached_manager_hb = -1;
+  p3d_cached_manager_iid = 0;
+  p3d_cached_manager_enabled = 0;
+  p3d_cached_camera_rot = 0;
+  p3d_cached_distance_scale = 1;
+);
+p3d_mgr_slot >= 0 ? (
+  p3d_mgr_base = P3D_MGR_BASE + p3d_mgr_slot * P3D_MGR_STRIDE;
+  p3d_mgr_hb = gmem[p3d_mgr_base + P3D_MGR_HB];
+  p3d_mgr_iid_now = gmem[p3d_mgr_base + P3D_MGR_IID];
+  (abs(p3d_mgr_iid_now - p3d_cached_manager_iid) >= 0.5) ? p3d_cached_manager_hb = -1;
+  (p3d_mgr_hb != p3d_cached_manager_hb) ? (
+    p3d_cached_manager_hb = p3d_mgr_hb;
+    p3d_cached_manager_iid = p3d_mgr_iid_now;
+    p3d_target_mgr_iid = p3d_cached_manager_iid;
+    p3d_cached_manager_enabled = gmem[p3d_mgr_base + P3D_MGR_ENABLE] >= 0.5 ? 1 : 0;
+    p3d_cached_camera_rot = gmem[p3d_mgr_base + P3D_MGR_CAMERA_ROT] * gmem[p3d_mgr_base + P3D_MGR_ROT_SCALE];
+    p3d_cached_distance_scale = gmem[p3d_mgr_base + P3D_MGR_DIST_SCALE];
+    p3d_cached_distance_scale <= 0 ? p3d_cached_distance_scale = 1;
+    p3d_cached_distance_scale = p3d_clamp(p3d_cached_distance_scale, 0.25, 16.0);
+    p3d_mgr_hold = P3D_MANAGER_HOLD_BLOCKS;
+  ) : (
+    p3d_mgr_hold > 0 ? p3d_mgr_hold -= 1;
+  );
+) : (
+  p3d_mgr_hold > 0 ? p3d_mgr_hold -= 1;
+);
+
+p3d_manager_iid = p3d_cached_manager_iid;
+p3d_manager_enabled = p3d_cached_manager_enabled;
+p3d_manager_alive = p3d_mgr_hold > 0 ? 1 : 0;
+p3d_link_active = (p3d_link_enabled && p3d_manager_alive && p3d_manager_enabled && (p3d_manager_amt > 0.0001)) ? 1 : 0;
+
+p3d_camera_rot = p3d_cached_camera_rot;
+p3d_distance_scale = p3d_cached_distance_scale;
+
+while (msg_recv(#p3d_registry_bus, p3d_msg_src, p3d_msg_tag, p3d_msg_a, p3d_msg_b, p3d_msg_c, p3d_msg_d)) (
+  (p3d_msg_tag == P3D_OP_MANAGER_STATE) && (p3d_msg_src != p3d_iid) ? (
+    p3d_last_manager_msg = p3d_msg_src;
+    p3d_rx_manager_seq = p3d_msg_d;
+  );
+);
+
 // --- raw UI targets ---
-tgt_lat = slider1;
+tgt_lat = slider6;
 tgt_lat < -1 ? tgt_lat = -1;
 tgt_lat > 1 ? tgt_lat = 1;
 
-tgt_dist_n = slider2;
+tgt_dist_n = slider7;
 tgt_dist_n < 0 ? tgt_dist_n = 0;
 tgt_dist_n > 1 ? tgt_dist_n = 1;
 
-tgt_fb = slider3;
+tgt_fb = slider8;
 tgt_fb < -1 ? tgt_fb = -1;
 tgt_fb > 1 ? tgt_fb = 1;
 
-tgt_throw = slider4;
+tgt_throw = slider9;
 tgt_throw < 0 ? tgt_throw = 0;
 tgt_throw > 1 ? tgt_throw = 1;
 
-tgt_width = slider5;
+tgt_width = slider10;
 tgt_width < 0 ? tgt_width = 0;
 tgt_width > 1 ? tgt_width = 1;
 
-tgt_ext = slider6;
+tgt_ext = slider11;
 tgt_ext < 0 ? tgt_ext = 0;
 tgt_ext > 1 ? tgt_ext = 1;
 
-tgt_room = slider7;
+tgt_room = slider12;
 tgt_room < 0 ? tgt_room = 0;
 tgt_room > 1 ? tgt_room = 1;
 
-tgt_occ = slider8;
+tgt_occ = slider13;
 tgt_occ < 0 ? tgt_occ = 0;
 tgt_occ > 1 ? tgt_occ = 1;
 
-tgt_motion = slider9;
+tgt_motion = slider14;
 tgt_motion < 0 ? tgt_motion = 0;
 tgt_motion > 1 ? tgt_motion = 1;
 
-tgt_trim = 10^(slider10/20);
+tgt_trim = 10^(slider15/20);
 
-auto_safe = slider11 >= 0.5 ? 1 : 0;
+auto_safe = slider16 >= 0.5 ? 1 : 0;
 last_automation_safe = auto_safe;
 
-cue_curve_user = slider12;
+cue_curve_user = slider17;
 cue_curve_user < 1 ? cue_curve_user = 1;
 cue_curve_user > 3 ? cue_curve_user = 3;
 
-smooth_ms = slider13;
+smooth_ms = slider18;
 smooth_ms < 5 ? smooth_ms = 5;
 auto_safe && smooth_ms < 90 ? smooth_ms = 90;
 last_smooth_ms = smooth_ms;
@@ -291,9 +1165,55 @@ coeff_ms < 15 ? coeff_ms = 15;
 coeff_k = 1 - exp(-1/((coeff_ms*0.001)*srate));
 meter_k  = 1 - exp(-1/(0.050*srate));
 
-tgt_rsize = slider14;
+tgt_rsize = slider19;
 tgt_rsize < 0 ? tgt_rsize = 0;
 tgt_rsize > 1 ? tgt_rsize = 1;
+
+// --- Manager camera transform ---
+// Sliders retain the fixed world position. Linked mode only changes the temporary render target.
+p3d_world_lat = tgt_lat;
+p3d_world_fb = tgt_fb;
+p3d_world_dist_n = tgt_dist_n;
+p3d_world_r = sqrt(p3d_world_lat*p3d_world_lat + p3d_world_fb*p3d_world_fb);
+p3d_world_r > 1 ? p3d_world_r = 1;
+p3d_world_ang = p3d_angle_from_lat_fb(p3d_world_lat, p3d_world_fb);
+p3d_effective_ang = p3d_world_ang;
+p3d_effective_lat = p3d_world_lat;
+p3d_effective_fb = p3d_world_fb;
+
+p3d_link_active ? (
+  // Rotation uses fixed object world coordinates. Distance is recalculated from
+  // the transformed topology instead of only multiplying the old Distance knob.
+  p3d_effective_ang = p3d_wrap_deg(p3d_world_ang - p3d_camera_rot * p3d_manager_amt);
+  tgt_lat = sin(p3d_effective_ang * $pi / 180) * p3d_world_r;
+  tgt_fb  = cos(p3d_effective_ang * $pi / 180) * p3d_world_r;
+
+  // Topology-aware distance: when a camera turn pulls a rear/side object toward
+  // the front plane it feels less distant; when it pushes the object rearward it
+  // feels farther. Manager Distance Scale can exaggerate this well beyond 2x.
+  p3d_depth_delta = tgt_fb - p3d_world_fb;
+  p3d_side_delta = abs(tgt_lat) - abs(p3d_world_lat);
+  p3d_topology_dist = 1 - 0.42 * p3d_depth_delta * p3d_manager_amt + 0.10 * p3d_side_delta * p3d_manager_amt;
+  p3d_topology_dist < 0.25 ? p3d_topology_dist = 0.25;
+  p3d_topology_dist > 4.00 ? p3d_topology_dist = 4.00;
+  tgt_dist_n = p3d_world_dist_n * (1 + (p3d_distance_scale - 1) * p3d_manager_amt) * p3d_topology_dist;
+  tgt_dist_n < 0 ? tgt_dist_n = 0;
+  tgt_dist_n > 4.0 ? tgt_dist_n = 4.0;
+
+  p3d_effective_lat = tgt_lat;
+  p3d_effective_fb = tgt_fb;
+);
+
+last_manager_link = p3d_link_enabled;
+last_manager_active = p3d_link_active;
+last_manager_id = p3d_manager_iid;
+last_object_id = p3d_obj_id;
+last_world_az = p3d_world_ang;
+last_effective_az = p3d_effective_ang;
+last_effective_lat = p3d_effective_lat;
+last_effective_fb = p3d_effective_fb;
+last_effective_dist_n = tgt_dist_n;
+last_camera_rot = p3d_camera_rot;
 
 // --- visual coordinate normalization ---
 pos_r = sqrt(tgt_lat*tgt_lat + tgt_fb*tgt_fb);
@@ -350,11 +1270,20 @@ cue_ang = atan(cue_side / (abs(cue_front) + 0.000000000000000001)) * 180 / $pi;
 tgt_az = cue_ang;
 last_cue_az = cue_ang;
 
-// Distance mapping: V6 trades V5's huge 22m reach for faster, higher-resolution stage placement.
-_depth2 = tgt_dist_n*tgt_dist_n;
-_depth3 = _depth2*tgt_dist_n;
-tgt_depth = tgt_dist_n;
+// Distance mapping: local UI stays high-resolution; Manager-linked topology can extend effective distance beyond the local 0..1 range.
+tgt_dist_calc = tgt_dist_n;
+tgt_dist_calc < 0 ? tgt_dist_calc = 0;
+tgt_dist_calc > 4 ? tgt_dist_calc = 4;
+base_dist_n = tgt_dist_calc;
+base_dist_n > 1 ? base_dist_n = 1;
+_depth2 = base_dist_n*base_dist_n;
+_depth3 = _depth2*base_dist_n;
+tgt_depth = tgt_dist_calc;
 dist_m = 0.18 + 8.82*(0.72*_depth2 + 0.28*_depth3);
+tgt_dist_calc > 1 ? (
+  ext_dist = tgt_dist_calc - 1;
+  dist_m += 8.0*ext_dist + 18.0*ext_dist*ext_dist;
+);
 last_dist_m = dist_m;
 
 // Direct gain vs distance/occlusion
@@ -530,6 +1459,10 @@ rear_fc < 2300 ? rear_fc = 2300;
 rear_fc > 18000 ? rear_fc = 18000;
 rear_t_a = exp(-2*$pi*rear_fc/srate);
 
+p3d_seq += 1;
+p3d_publish_slot();
+p3d_link_enabled ? msg_send(#p3d_registry_bus, P3D_OP_PANNER_HEART, p3d_iid, p3d_obj_id, p3d_world_ang, p3d_effective_ang);
+
 @sample
 // --- input to mono ---
 mono_in = (spl0 + spl1) * 0.5;
@@ -590,26 +1523,30 @@ az_eff < -180 ? az_eff = -180;
 // --- distance / air absorption ---
 air_state = (1-sm_air_a)*mono_in + sm_air_a*air_state;
 
-// --- improved occlusion ---
+// --- stable occlusion source model ---
+// Build a mono blocked-source color for reflections, but keep the direct
+// localization feed clean. Applying the occlusion smear before ITD made the
+// delayed/far ear hear the blocker as a separate moving cue.
 occ_lp = (1-sm_occ_a)*air_state + sm_occ_a*occ_lp;
 occ_low_mem = (1-occ_split_a)*occ_lp + occ_split_a*occ_low_mem;
 occ_high = occ_lp - occ_low_mem;
 
-occ_low_g  = 1 + 0.30*sm_occ;
-occ_high_g = 1 - 0.90*sm_occ;
-occ_high_g < 0.08 ? occ_high_g = 0.08;
+occ_low_g  = 1 + 0.24*sm_occ;
+occ_high_g = 1 - 0.86*sm_occ;
+occ_high_g < 0.10 ? occ_high_g = 0.10;
 occ_sig = occ_low_mem*occ_low_g + occ_high*occ_high_g;
 
-// phase smear
-ap_a = 0.56 + 0.30*sm_occ;
+// Reflection-only phase smear. The direct path gets per-ear coloration later,
+// after localization, which prevents opposite-ear occlusion flicker.
+ap_a = 0.38 + 0.16*sm_occ;
 ap_y = -ap_a*occ_sig + occ_ap_x1 + ap_a*occ_ap_y1;
 occ_ap_x1 = occ_sig;
 occ_ap_y1 = ap_y;
-occ_sig = ap_y;
+occ_er_sig = occ_sig*(1 - 0.30*sm_occ) + ap_y*(0.30*sm_occ);
 
-// direct path mixes around occlusion; reflections are less occluded
-direct_feed = air_state*(1-sm_occ) + occ_sig*sm_occ;
-er_feed = air_state*(1 - 0.32*sm_occ) + occ_sig*(0.32*sm_occ);
+// Direct path is localized first; reflections are less occluded and may smear.
+direct_feed = air_state;
+er_feed = air_state*(1 - 0.28*sm_occ) + occ_er_sig*(0.28*sm_occ);
 
 // --- ITD delay line ---
 itdbuf[itd_wpos] = direct_feed;
@@ -724,6 +1661,24 @@ center_blend = sm_width * (0.22 + 0.10*sm_depth + 0.10*rear);
 center_blend > 0.45 ? center_blend = 0.45;
 dir_l = dir_l*(1-center_blend) + direct_feed*center_blend;
 dir_r = dir_r*(1-center_blend) + direct_feed*center_blend;
+
+// --- stable per-ear occlusion coloration ---
+// Color the already-localized left/right direct path instead of feeding a
+// pre-occluded mono signal into ITD. This keeps the blocker attached to the
+// object and stops far-ear flicker when Occlusion is high.
+occ_dir_lp_l = (1-sm_occ_a)*dir_l + sm_occ_a*occ_dir_lp_l;
+occ_dir_low_l = (1-occ_split_a)*occ_dir_lp_l + occ_split_a*occ_dir_low_l;
+occ_dir_high_l = occ_dir_lp_l - occ_dir_low_l;
+occ_dir_col_l = occ_dir_low_l*occ_low_g + occ_dir_high_l*occ_high_g;
+
+occ_dir_lp_r = (1-sm_occ_a)*dir_r + sm_occ_a*occ_dir_lp_r;
+occ_dir_low_r = (1-occ_split_a)*occ_dir_lp_r + occ_split_a*occ_dir_low_r;
+occ_dir_high_r = occ_dir_lp_r - occ_dir_low_r;
+occ_dir_col_r = occ_dir_low_r*occ_low_g + occ_dir_high_r*occ_high_g;
+
+occ_blend = sm_occ;
+dir_l = dir_l*(1-occ_blend) + occ_dir_col_l*occ_blend;
+dir_r = dir_r*(1-occ_blend) + occ_dir_col_r*occ_blend;
 
 // --- pinna externalize hint ---
 pn_y = pn_b0_l*dir_l + pn_b1_l*pn_x1_l + pn_b2_l*pn_x2_l - pn_a1_l*pn_y1_l - pn_a2_l*pn_y2_l;
@@ -846,8 +1801,10 @@ er_ap_x1_r = er_r;
 er_ap_y1_r = er_ap_y;
 er_r = er_ap_y;
 
-// Distance / occlusion push more energy into the room
-er_push = 0.70 + 0.72*sm_depth + 0.55*sm_occ + 0.12*side + 0.18*rear;
+// Distance / occlusion push more energy into the room.
+// V6.2.2 moderates the occlusion room boost so the opposite ear does not
+// read reflections as a second blocker position.
+er_push = 0.70 + 0.72*sm_depth + 0.38*sm_occ + 0.12*side + 0.18*rear;
 er_l *= sm_er_g * er_push;
 er_r *= sm_er_g * er_push;
 
@@ -866,15 +1823,21 @@ meter_er     += (max(abs(er_l),  abs(er_r))  - meter_er)     * meter_k;
 
 
 @gfx 820 500
-// V6.1 perceptual-position UI: stage canvas, visual-vs-cue ghosting, automation-safe controls, distinct visual nouns.
+// V6.5 perceptual-position UI: standalone-clean main surface plus opt-in Manager Link side drawer.
 
 winflags = gfx_getchar(65536);
+strlen(#target_manager) <= 0 ? strcpy(#target_manager, "Manager");
+strlen(#object_name) <= 0 ? strcpy(#object_name, "Object");
+// IPC setup and shared-state publication are @block-only in DSP-JSFX.
+// Keep the panner awake via options:idle=always, then let @block own Manager discovery.
+// @gfx only edits local UI state and reads the last block-published values.
+noop = 0;
 
 // --- layout ---
 base_w = 820; base_h = 500;
 ui_s = min(gfx_w/base_w, gfx_h/base_h);
 ui_s < 0.56 ? ui_s = 0.56;
-ui_s > 1.85 ? ui_s = 1.85;
+ui_s > 1.45 ? ui_s = 1.45;
 
 pad = 16*ui_s;
 pad < 10 ? pad = 10;
@@ -915,8 +1878,8 @@ room_hw = canvas_w * 0.39;
 room_hd = canvas_h * 0.31;
 room_hw < 86*ui_s ? room_hw = 86*ui_s;
 room_hd < 70*ui_s ? room_hd = 70*ui_s;
-room_hw *= 0.88 + 0.12*slider14;
-room_hd *= 0.86 + 0.14*slider14;
+room_hw *= 0.88 + 0.12*slider19;
+room_hd *= 0.86 + 0.14*slider19;
 
 room_l = cx - room_hw;
 room_r = cx + room_hw;
@@ -924,20 +1887,31 @@ room_t = cy - room_hd;
 room_b = cy + room_hd;
 
 // --- sliders / readouts ---
-ui_lat = slider1;
-ui_dist = slider2;
-ui_fb = slider3;
-ui_throw = slider4;
-ui_size = slider5;
-ui_push = slider6;
-ui_room = slider7;
-ui_occ = slider8;
-ui_motion = slider9;
-ui_trim = slider10;
-ui_safe = slider11 >= 0.5 ? 1 : 0;
-ui_curve = slider12;
-ui_smooth = slider13;
-ui_rsize = slider14;
+ui_base_lat = slider6;
+ui_base_dist = slider7;
+ui_base_fb = slider8;
+ui_link_view = (slider4 >= 0.5 && last_manager_active) ? 1 : 0;
+ui_lat = ui_link_view ? last_effective_lat : ui_base_lat;
+ui_dist = ui_link_view ? last_effective_dist_n : ui_base_dist;
+ui_fb = ui_link_view ? last_effective_fb : ui_base_fb;
+ui_dist_vis = ui_dist;
+ui_dist_vis < 0 ? ui_dist_vis = 0;
+ui_dist_vis > 1 ? ui_dist_vis = 1;
+ui_throw = slider9;
+ui_size = slider10;
+ui_push = slider11;
+ui_room = slider12;
+ui_occ = slider13;
+ui_motion = slider14;
+ui_trim = slider15;
+ui_safe = slider16 >= 0.5 ? 1 : 0;
+ui_curve = slider17;
+ui_smooth = slider18;
+ui_rsize = slider19;
+ui_link = slider4 >= 0.5 ? 1 : 0;
+ui_obj_id = floor(slider3 + 0.5);
+ui_mgr_amt = slider5;
+ui_target_mgr = floor(slider20 + 0.5);
 
 pos_r = sqrt(ui_lat*ui_lat + ui_fb*ui_fb);
 pos_r > 1 ? (
@@ -993,18 +1967,18 @@ bpBx = cx + bBx * room_hw; bpBy = cy - bBy * room_hd;
 card_gap = 10*ui_s;
 card_gap < 6 ? card_gap = 6;
 
-card1_h = rh * 0.23;
-card2_h = rh * 0.57;
-min_c1 = 88*ui_s;
-min_c2 = 218*ui_s;
-min_c3 = 76*ui_s;
+card1_h = rh * 0.18;
+card2_h = rh * 0.60;
+min_c1 = 96*ui_s;
+min_c2 = 265*ui_s;
+min_c3 = 112*ui_s;
 card1_h < min_c1 ? card1_h = min_c1;
 card2_h < min_c2 ? card2_h = min_c2;
 card3_h = rh - card1_h - card2_h - card_gap*2;
 card3_h < min_c3 ? (
   deficit = min_c3 - card3_h;
   card2_h -= deficit;
-  card2_h < 188*ui_s ? card2_h = 188*ui_s;
+  card2_h < 232*ui_s ? card2_h = 232*ui_s;
   card3_h = rh - card1_h - card2_h - card_gap*2;
 );
 card3_h < 58*ui_s ? card3_h = 58*ui_s;
@@ -1021,14 +1995,14 @@ barw = c2w - bar_pad_x*2 - value_gutter;
 barw < 96*ui_s ? barw = 96*ui_s;
 valx = barx + barw + 8*ui_s;
 
-bars_top = c2y + 39*ui_s;
-bars_bottom = c2y + c2h - 12*ui_s;
+bars_top = c2y + 44*ui_s;
+bars_bottom = c2y + c2h - 10*ui_s;
 row_h = (bars_bottom - bars_top) / 10;
-row_h < 15*ui_s ? row_h = 15*ui_s;
-barh = row_h * 0.42;
-barh > 13*ui_s ? barh = 13*ui_s;
-barh < 8*ui_s ? barh = 8*ui_s;
-label_lift = barh + 4*ui_s;
+row_h < 22*ui_s ? row_h = 22*ui_s;
+barh = row_h * 0.32;
+barh > 11*ui_s ? barh = 11*ui_s;
+barh < 7*ui_s ? barh = 7*ui_s;
+label_lift = row_h * 0.42;
 
 b1y = bars_top + row_h*0.50 - barh*0.50;
 b2y = bars_top + row_h*1.50 - barh*0.50;
@@ -1075,6 +2049,90 @@ safe_w = 96*ui_s;
 safe_h = 22*ui_s;
 hover_safe = mouse_x >= safe_x && mouse_x <= safe_x+safe_w && mouse_y >= safe_y && mouse_y <= safe_y+safe_h;
 
+// Optional Manager Link side drawer. Closed by default so the panner stays clean
+// for standalone use. Hitboxes are inactive unless the drawer is open.
+drawer_w = 282*ui_s;
+drawer_w < 220 ? drawer_w = 220;
+drawer_w > gfx_w*0.42 ? drawer_w = gfx_w*0.42;
+drawer_x = gfx_w - pad - drawer_w;
+drawer_y = canvas_y;
+drawer_h = field_h;
+drawer_x < canvas_x + 120*ui_s ? drawer_x = canvas_x + 120*ui_s;
+drawer_tab_w = 32*ui_s;
+drawer_tab_h = 122*ui_s;
+drawer_tab_x = gfx_w - drawer_tab_w - 3*ui_s;
+drawer_tab_y = canvas_y + 82*ui_s;
+hover_drawer_tab = mouse_x >= drawer_tab_x && mouse_x <= drawer_tab_x+drawer_tab_w && mouse_y >= drawer_tab_y && mouse_y <= drawer_tab_y+drawer_tab_h;
+inside_drawer = ui_drawer_open && mouse_x >= drawer_x && mouse_x <= drawer_x+drawer_w && mouse_y >= drawer_y && mouse_y <= drawer_y+drawer_h;
+
+box_h = 18*ui_s;
+box_h < 15 ? box_h = 15;
+link_pad = 14*ui_s;
+field_x = drawer_x + link_pad;
+field_w = drawer_w - link_pad*2;
+bus_y = drawer_y + 70*ui_s;
+name_y = drawer_y + 112*ui_s;
+id_y = drawer_y + 154*ui_s;
+
+drawer_active = ui_drawer_open || ui_text_active > 0;
+scene_btn_w = 22*ui_s;
+scene_btn_w < 18 ? scene_btn_w = 18;
+scene_btn_x = field_x + field_w - scene_btn_w;
+hover_scene_btn = drawer_active && mouse_x >= scene_btn_x && mouse_x <= scene_btn_x+scene_btn_w && mouse_y >= bus_y && mouse_y <= bus_y+box_h;
+hover_bus_box = drawer_active && mouse_x >= field_x && mouse_x <= scene_btn_x-3*ui_s && mouse_y >= bus_y && mouse_y <= bus_y+box_h;
+hover_name_box = drawer_active && mouse_x >= field_x && mouse_x <= field_x+field_w && mouse_y >= name_y && mouse_y <= name_y+box_h;
+
+scene_menu_x = field_x;
+scene_menu_y = bus_y + box_h + 3*ui_s;
+scene_row_h = 18*ui_s;
+scene_row_h < 15 ? scene_row_h = 15;
+scene_menu_w = field_w;
+scene_hover_idx = -1;
+// Manager dropdown shows active 3DPannerManager names only. If none exist, it shows one local fallback row.
+scene_real_count = p3d_ui_scene_count_active();
+scene_count = scene_real_count > 0 ? scene_real_count : 1;
+scene_rows_vis = scene_count;
+scene_rows_vis > 5 ? scene_rows_vis = 5;
+scene_menu_h = scene_rows_vis * scene_row_h;
+scene_hover_idx = -1;
+inside_scene_menu = ui_scene_menu && mouse_x >= scene_menu_x && mouse_x <= scene_menu_x+scene_menu_w && mouse_y >= scene_menu_y && mouse_y <= scene_menu_y + scene_menu_h;
+inside_scene_menu ? (
+  scene_hover_idx = floor((mouse_y - scene_menu_y) / scene_row_h);
+  scene_hover_idx < 0 ? scene_hover_idx = -1;
+  scene_hover_idx >= scene_rows_vis ? scene_hover_idx = -1;
+);
+
+id_minus_x = field_x + 54*ui_s; id_minus_y = id_y; id_btn_w = 21*ui_s; id_btn_h = box_h;
+id_plus_x = id_minus_x + id_btn_w + 42*ui_s; id_plus_y = id_y;
+hover_id_minus = 0;
+hover_id_plus = 0;
+
+mgr_id_y = drawer_y + 188*ui_s;
+mgr_id_minus_x = field_x + 88*ui_s; mgr_id_minus_y = mgr_id_y;
+mgr_id_plus_x = mgr_id_minus_x + id_btn_w + 42*ui_s; mgr_id_plus_y = mgr_id_y;
+hover_mgr_id_minus = 0;
+hover_mgr_id_plus = 0;
+
+link_btn_x = field_x; link_btn_y = drawer_y + 158*ui_s; link_btn_w = field_w; link_btn_h = 28*ui_s;
+hover_link_btn = drawer_active && mouse_x >= link_btn_x && mouse_x <= link_btn_x+link_btn_w && mouse_y >= link_btn_y && mouse_y <= link_btn_y+link_btn_h;
+amt_x = field_x; amt_y = link_btn_y + 58*ui_s; amt_w = field_w; amt_h = 10*ui_s;
+hover_mgr_amt = 0;
+hover_textbox = hover_bus_box || hover_name_box;
+
+// GFX-only advanced slider widgets in the bottom card.
+adv_barx = c3x + 14*ui_s;
+adv_barw = c3w - 76*ui_s;
+adv_valx = adv_barx + adv_barw + 7*ui_s;
+adv_barw < 74*ui_s ? adv_barw = 74*ui_s;
+adv_h = 9*ui_s; adv_h < 7 ? adv_h = 7;
+adv1y = c3y + 36*ui_s;
+adv2y = c3y + 61*ui_s;
+adv3y = c3y + 86*ui_s;
+hover_adv = 0;
+(mouse_x >= adv_barx && mouse_x <= adv_barx+adv_barw && mouse_y >= adv1y && mouse_y <= adv1y+adv_h) ? hover_adv = 1;
+(mouse_x >= adv_barx && mouse_x <= adv_barx+adv_barw && mouse_y >= adv2y && mouse_y <= adv2y+adv_h) ? hover_adv = 2;
+(mouse_x >= adv_barx && mouse_x <= adv_barx+adv_barw && mouse_y >= adv3y && mouse_y <= adv3y+adv_h) ? hover_adv = 3;
+
 // Snap chips
 chip_h = 22*ui_s;
 chip_y = canvas_y + canvas_h - chip_h - 11*ui_s;
@@ -1108,10 +2166,11 @@ hover_chip = 0;
 // Numeric IDs keep this JSFX-safe:
 // 20s canvas/visual cues, 30 Auto Safe, 40s snap chips, 100s lanes.
 tip_id = 0;
-tip_hot = (!mouse_l && !mouse_r && ui_mode == 0);
+tip_hot = (!mouse_l && !mouse_r && ui_mode == 0 && ui_text_active == 0 && !hover_drawer_tab && !inside_drawer && !inside_scene_menu);
 
 tip_hot ? (
   hover_tip_bar > 0 ? tip_id = 100 + hover_tip_bar;
+  hover_adv > 0 ? tip_id = 200 + hover_adv;
   hover_safe ? tip_id = 30;
   hover_chip > 0 ? tip_id = 40 + hover_chip;
 
@@ -1134,7 +2193,7 @@ tip_hot ? (
   size_hot = inside_room && ui_size > 0.06 && !near_src && src_d2 <= size_hot_r*size_hot_r;
 
   range_min_tip = min(room_hw, room_hd);
-  range_active_tip = range_min_tip * (0.18 + 0.70*ui_dist);
+  range_active_tip = range_min_tip * (0.18 + 0.70*ui_dist_vis);
   range_hot = inside_room && abs(mouse_rad - range_active_tip) <= 9*ui_s;
 
   motion_hot_r = (4 + 28*ui_motion)*ui_s + 8*ui_s;
@@ -1176,63 +2235,137 @@ tip_id == tooltip_last_id ? (
   tooltip_last_id = tip_id;
   tooltip_frames = 0;
 );
-tooltip_show = tip_id > 0 && tooltip_frames >= 8;
+tooltip_show = tip_id > 0 && tooltip_frames >= 5;
 
+// --- UI-only text entry ---
+// Click Object Name to select the whole current value. The next typed character replaces it.
+ui_text_active > 0 ? (
+  ui_text_frames += 1;
+  while ((key = gfx_getchar()) > 0) (
+    key == 13 ? (
+      ui_text_active == 1 ? (
+        strcpy(#target_manager, #p3d_edit_text);
+        strlen(#target_manager) <= 0 ? strcpy(#target_manager, "Manager");
+        strcpy(#p3d_edit_manager, #target_manager);
+        ui_scene_menu = 0;
+        p3d_rebind_pending = 1;
+        p3d_bus_hash = p3d_hash_string(#target_manager);
+        p3d_mgr_hold = 0;
+        p3d_cached_manager_hb = -1;
+        p3d_cached_manager_iid = 0;
+        p3d_target_mgr_iid = 0;
+        p3d_mgr_slot = -1;
+        p3d_slot_index = -1;
+      ) : ui_text_active == 2 ? (
+        strcpy(#object_name, #p3d_edit_text);
+        strlen(#object_name) <= 0 ? strcpy(#object_name, "Object");
+        strcpy(#p3d_edit_name, #object_name);
+        p3d_rebind_pending = 1;
+      );
+      ui_text_active = 0;
+      ui_text_select_all = 0;
+      sliderchange(-1.0);
+    ) : key == 27 ? (
+      ui_text_active = 0;
+      ui_text_select_all = 0;
+      strcpy(#p3d_edit_text, "");
+    ) : (key == 8 || key == 127) ? (
+      ui_text_select_all ? (
+        strcpy(#p3d_edit_text, "");
+        ui_text_select_all = 0;
+      ) : (
+        tlen = strlen(#p3d_edit_text);
+        tlen > 0 ? str_setchar(#p3d_edit_text, tlen-1, 0);
+      );
+    ) : ((key == 32) || (key >= 33 && key <= 126 && key != 34 && key != 92)) ? (
+      ui_text_select_all ? (
+        strcpy(#p3d_edit_text, "");
+        ui_text_select_all = 0;
+      );
+      tlen = strlen(#p3d_edit_text);
+      tlen < 72 ? (
+        key == 32 ? (
+          strcpy(#p3d_keychar, "_");
+        ) : (
+          sprintf(#p3d_keychar, "%c", key);
+        );
+        strcat(#p3d_edit_text, #p3d_keychar);
+      );
+    );
+  );
+) : (
+  ui_text_frames = 0;
+  ui_text_select_all = 0;
+);
 // --- wheel controls ---
 mouse_wheel != 0 ? (
   wstep = mouse_wheel / 120;
   wheel_scale = mouse_shift ? 0.25 : 1.0;
 
-  hover_bar == 1 ? (
-    slider1 += wstep * 0.045 * wheel_scale;
-    slider1 < -1 ? slider1 = -1; slider1 > 1 ? slider1 = 1;
+  ui_text_active > 0 ? (
+    noop = 0;
+  ) : hover_adv == 1 ? (
+    slider17 += wstep * 0.035 * wheel_scale;
+    slider17 < 1 ? slider17 = 1; slider17 > 3 ? slider17 = 3;
+    sliderchange(-1.0);
+  ) : hover_adv == 2 ? (
+    slider18 += wstep * 5 * wheel_scale;
+    slider18 < 5 ? slider18 = 5; slider18 > 250 ? slider18 = 250;
+    sliderchange(-1.0);
+  ) : hover_adv == 3 ? (
+    slider19 += wstep * 0.035 * wheel_scale;
+    slider19 < 0 ? slider19 = 0; slider19 > 1 ? slider19 = 1;
+    sliderchange(-1.0);
+  ) : hover_bar == 1 ? (
+    slider6 += wstep * 0.045 * wheel_scale;
+    slider6 < -1 ? slider6 = -1; slider6 > 1 ? slider6 = 1;
     sliderchange(-1.0);
   ) : hover_bar == 2 ? (
-    slider3 += wstep * 0.045 * wheel_scale;
-    slider3 < -1 ? slider3 = -1; slider3 > 1 ? slider3 = 1;
+    slider8 += wstep * 0.045 * wheel_scale;
+    slider8 < -1 ? slider8 = -1; slider8 > 1 ? slider8 = 1;
     sliderchange(-1.0);
   ) : hover_bar == 3 ? (
-    slider2 += wstep * 0.035 * wheel_scale;
-    slider2 < 0 ? slider2 = 0; slider2 > 1 ? slider2 = 1;
-    sliderchange(-1.0);
-  ) : hover_bar == 4 ? (
-    slider4 += wstep * 0.035 * wheel_scale;
-    slider4 < 0 ? slider4 = 0; slider4 > 1 ? slider4 = 1;
-    sliderchange(-1.0);
-  ) : hover_bar == 5 ? (
-    slider5 += wstep * 0.030 * wheel_scale;
-    slider5 < 0 ? slider5 = 0; slider5 > 1 ? slider5 = 1;
-    sliderchange(-1.0);
-  ) : hover_bar == 6 ? (
-    slider6 += wstep * 0.035 * wheel_scale;
-    slider6 < 0 ? slider6 = 0; slider6 > 1 ? slider6 = 1;
-    sliderchange(-1.0);
-  ) : hover_bar == 7 ? (
     slider7 += wstep * 0.035 * wheel_scale;
     slider7 < 0 ? slider7 = 0; slider7 > 1 ? slider7 = 1;
     sliderchange(-1.0);
-  ) : hover_bar == 8 ? (
-    slider8 += wstep * 0.035 * wheel_scale;
-    slider8 < 0 ? slider8 = 0; slider8 > 1 ? slider8 = 1;
-    sliderchange(-1.0);
-  ) : hover_bar == 9 ? (
-    slider9 += wstep * 0.030 * wheel_scale;
+  ) : hover_bar == 4 ? (
+    slider9 += wstep * 0.035 * wheel_scale;
     slider9 < 0 ? slider9 = 0; slider9 > 1 ? slider9 = 1;
     sliderchange(-1.0);
+  ) : hover_bar == 5 ? (
+    slider10 += wstep * 0.030 * wheel_scale;
+    slider10 < 0 ? slider10 = 0; slider10 > 1 ? slider10 = 1;
+    sliderchange(-1.0);
+  ) : hover_bar == 6 ? (
+    slider11 += wstep * 0.035 * wheel_scale;
+    slider11 < 0 ? slider11 = 0; slider11 > 1 ? slider11 = 1;
+    sliderchange(-1.0);
+  ) : hover_bar == 7 ? (
+    slider12 += wstep * 0.035 * wheel_scale;
+    slider12 < 0 ? slider12 = 0; slider12 > 1 ? slider12 = 1;
+    sliderchange(-1.0);
+  ) : hover_bar == 8 ? (
+    slider13 += wstep * 0.035 * wheel_scale;
+    slider13 < 0 ? slider13 = 0; slider13 > 1 ? slider13 = 1;
+    sliderchange(-1.0);
+  ) : hover_bar == 9 ? (
+    slider14 += wstep * 0.030 * wheel_scale;
+    slider14 < 0 ? slider14 = 0; slider14 > 1 ? slider14 = 1;
+    sliderchange(-1.0);
   ) : hover_bar == 10 ? (
-    slider10 += wstep * 0.4 * wheel_scale;
-    slider10 < -18 ? slider10 = -18; slider10 > 12 ? slider10 = 12;
+    slider15 += wstep * 0.4 * wheel_scale;
+    slider15 < -18 ? slider15 = -18; slider15 > 12 ? slider15 = 12;
     sliderchange(-1.0);
   ) : inside_canvas ? (
     mouse_ctrl ? (
-      slider4 += wstep * 0.035 * wheel_scale;
-      slider4 < 0 ? slider4 = 0; slider4 > 1 ? slider4 = 1;
+      slider9 += wstep * 0.035 * wheel_scale;
+      slider9 < 0 ? slider9 = 0; slider9 > 1 ? slider9 = 1;
     ) : mouse_alt ? (
-      slider6 += wstep * 0.035 * wheel_scale;
-      slider6 < 0 ? slider6 = 0; slider6 > 1 ? slider6 = 1;
+      slider11 += wstep * 0.035 * wheel_scale;
+      slider11 < 0 ? slider11 = 0; slider11 > 1 ? slider11 = 1;
     ) : (
-      slider2 += wstep * 0.035 * wheel_scale;
-      slider2 < 0 ? slider2 = 0; slider2 > 1 ? slider2 = 1;
+      slider7 += wstep * 0.035 * wheel_scale;
+      slider7 < 0 ? slider7 = 0; slider7 > 1 ? slider7 = 1;
     );
     sliderchange(-1.0);
   );
@@ -1242,79 +2375,163 @@ mouse_wheel != 0 ? (
 // --- press actions ---
 (!ui_prev_r && mouse_r) ? (
   inside_canvas ? (
-    slider1 = 0;
-    slider2 = 0.25;
-    slider3 = 0.82;
+    slider6 = 0;
+    slider7 = 0.25;
+    slider8 = 0.82;
     sliderchange(-1.0);
-  ) : hover_bar == 1 ? (slider1 = 0; sliderchange(-1.0);) :
-  hover_bar == 2 ? (slider3 = 0.82; sliderchange(-1.0);) :
-  hover_bar == 3 ? (slider2 = 0.25; sliderchange(-1.0);) :
-  hover_bar == 4 ? (slider4 = 0.58; sliderchange(-1.0);) :
-  hover_bar == 5 ? (slider5 = 0.10; sliderchange(-1.0);) :
-  hover_bar == 6 ? (slider6 = 0.42; sliderchange(-1.0);) :
-  hover_bar == 7 ? (slider7 = 0.30; sliderchange(-1.0);) :
-  hover_bar == 8 ? (slider8 = 0.00; sliderchange(-1.0);) :
-  hover_bar == 9 ? (slider9 = 0.04; sliderchange(-1.0);) :
-  hover_bar == 10 ? (slider10 = 0.0; sliderchange(-1.0););
+  ) : hover_bar == 1 ? (slider6 = 0; sliderchange(-1.0);) :
+  hover_bar == 2 ? (slider8 = 0.82; sliderchange(-1.0);) :
+  hover_bar == 3 ? (slider7 = 0.25; sliderchange(-1.0);) :
+  hover_bar == 4 ? (slider9 = 0.58; sliderchange(-1.0);) :
+  hover_bar == 5 ? (slider10 = 0.10; sliderchange(-1.0);) :
+  hover_bar == 6 ? (slider11 = 0.42; sliderchange(-1.0);) :
+  hover_bar == 7 ? (slider12 = 0.30; sliderchange(-1.0);) :
+  hover_bar == 8 ? (slider13 = 0.00; sliderchange(-1.0);) :
+  hover_bar == 9 ? (slider14 = 0.04; sliderchange(-1.0);) :
+  hover_bar == 10 ? (slider15 = 0.0; sliderchange(-1.0);) :
+  hover_adv == 1 ? (slider17 = 2.0; sliderchange(-1.0);) :
+  hover_adv == 2 ? (slider18 = 90; sliderchange(-1.0);) :
+  hover_adv == 3 ? (slider19 = 0.55; sliderchange(-1.0););
 );
 
 (!ui_prev_l && mouse_l) ? (
-  hover_safe ? (
-    slider11 = 1 - slider11;
+  ui_scene_menu && scene_hover_idx >= 0 ? (
+    scene_real_count > 0 ? (
+      p3d_ui_scene_select_nth(scene_hover_idx);
+    ) : (
+      strcpy(#target_manager, "Manager");
+      slider20 = 1;
+      p3d_target_mgr_iid = 0;
+    );
+    strlen(#target_manager) <= 0 ? strcpy(#target_manager, "Manager");
+    strcpy(#p3d_edit_manager, #target_manager);
+    p3d_bus_hash = p3d_hash_string(#target_manager);
+    p3d_mgr_hold = 0;
+    p3d_cached_manager_hb = -1;
+    p3d_cached_manager_iid = 0;
+    p3d_cached_manager_enabled = 0;
+    p3d_cached_camera_rot = 0;
+    p3d_cached_distance_scale = 1;
+    p3d_target_mgr_iid = 0;
+    p3d_manager_iid = 0;
+    p3d_mgr_slot = -1;
+    p3d_slot_index = -1;
+    ui_scene_menu = 0;
+    ui_text_active = 0;
+    p3d_rebind_pending = 1;
+    sliderchange(-1.0);
+  ) : (hover_scene_btn || hover_bus_box) ? (
+    ui_scene_menu = 1 - ui_scene_menu;
+    ui_text_active = 0;
+    p3d_allow_msg = 0;
+    p3d_service_registry();
+    sliderchange(-1.0);
+  ) : hover_drawer_tab ? (
+    ui_drawer_open = 1 - ui_drawer_open;
+    ui_text_active = 0;
+    ui_scene_menu = 0;
+    p3d_allow_msg = 0;
+    p3d_service_registry();
+    sliderchange(-1.0);
+  ) : hover_name_box ? (
+    ui_text_active = 2;
+    ui_text_frames = 0;
+    ui_text_select_all = 1;
+    strcpy(#p3d_edit_text, #object_name);
+  ) : ui_scene_menu && !inside_scene_menu ? (
+    ui_scene_menu = 0;
+  ) : ui_text_active > 0 ? (
+    ui_text_active == 1 ? (
+      strcpy(#target_manager, #p3d_edit_text);
+      strlen(#target_manager) <= 0 ? strcpy(#target_manager, "Manager");
+      strcpy(#p3d_edit_manager, #target_manager);
+      ui_scene_menu = 0;
+      p3d_rebind_pending = 1;
+      p3d_bus_hash = p3d_hash_string(#target_manager);
+      p3d_mgr_hold = 0;
+      p3d_mgr_slot = -1;
+      p3d_slot_index = -1;
+    ) : ui_text_active == 2 ? (
+      strcpy(#object_name, #p3d_edit_text);
+      strlen(#object_name) <= 0 ? strcpy(#object_name, "Object");
+      strcpy(#p3d_edit_name, #object_name);
+      p3d_rebind_pending = 1;
+    );
+    ui_text_active = 0;
+    ui_text_select_all = 0;
+    sliderchange(-1.0);
+  ) : hover_link_btn ? (
+    slider4 = 1 - slider4;
+    p3d_mgr_hold = 0;
+    p3d_cached_manager_hb = -1;
+    p3d_cached_manager_iid = 0;
+    p3d_cached_manager_enabled = 0;
+    p3d_cached_camera_rot = 0;
+    p3d_cached_distance_scale = 1;
+    p3d_rebind_pending = 1;
+    p3d_allow_msg = 0;
+    p3d_service_registry();
+    sliderchange(-1.0);
+  ) : hover_adv > 0 ? (
+    ui_mode = 200 + hover_adv;
+    ui_drag_start_x = mouse_x;
+    ui_drag_start_v1 = hover_adv == 1 ? slider17 : hover_adv == 2 ? slider18 : slider19;
+  ) : hover_safe ? (
+    slider16 = 1 - slider16;
     sliderchange(-1.0);
   ) : hover_chip > 0 ? (
     snap_r = 0.78;
-    hover_chip == 1 ? (slider1 = 0; slider3 = 0.82;) :
-    hover_chip == 2 ? (a = -30*$pi/180; slider1 = sin(a)*snap_r; slider3 = cos(a)*snap_r;) :
-    hover_chip == 3 ? (a = -45*$pi/180; slider1 = sin(a)*snap_r; slider3 = cos(a)*snap_r;) :
-    hover_chip == 4 ? (a = -60*$pi/180; slider1 = sin(a)*snap_r; slider3 = cos(a)*snap_r;) :
-    hover_chip == 5 ? (a = 30*$pi/180; slider1 = sin(a)*snap_r; slider3 = cos(a)*snap_r;) :
-    hover_chip == 6 ? (a = 45*$pi/180; slider1 = sin(a)*snap_r; slider3 = cos(a)*snap_r;) :
-    hover_chip == 7 ? (a = 60*$pi/180; slider1 = sin(a)*snap_r; slider3 = cos(a)*snap_r;) :
-                         (slider1 = 0; slider3 = -0.82;);
+    hover_chip == 1 ? (slider6 = 0; slider8 = 0.82;) :
+    hover_chip == 2 ? (a = -30*$pi/180; slider6 = sin(a)*snap_r; slider8 = cos(a)*snap_r;) :
+    hover_chip == 3 ? (a = -45*$pi/180; slider6 = sin(a)*snap_r; slider8 = cos(a)*snap_r;) :
+    hover_chip == 4 ? (a = -60*$pi/180; slider6 = sin(a)*snap_r; slider8 = cos(a)*snap_r;) :
+    hover_chip == 5 ? (a = 30*$pi/180; slider6 = sin(a)*snap_r; slider8 = cos(a)*snap_r;) :
+    hover_chip == 6 ? (a = 45*$pi/180; slider6 = sin(a)*snap_r; slider8 = cos(a)*snap_r;) :
+    hover_chip == 7 ? (a = 60*$pi/180; slider6 = sin(a)*snap_r; slider8 = cos(a)*snap_r;) :
+                         (slider6 = 0; slider8 = -0.82;);
     sliderchange(-1.0);
   ) : (near_src || inside_room) ? (
     ui_mode = 1;
     ui_drag_start_x = mouse_x;
     ui_drag_start_y = mouse_y;
-    ui_drag_start_v1 = slider1;
-    ui_drag_start_v2 = slider3;
-    ui_drag_start_v3 = slider2;
+    ui_drag_start_v1 = slider6;
+    ui_drag_start_v2 = slider8;
+    ui_drag_start_v3 = slider7;
   ) : hover_bar > 0 ? (
     ui_mode = 100 + hover_bar;
     ui_drag_bar = hover_bar;
     ui_drag_start_x = mouse_x;
     ui_drag_start_y = mouse_y;
     ui_drag_start_v1 =
-      hover_bar == 1 ? slider1 :
-      hover_bar == 2 ? slider3 :
-      hover_bar == 3 ? slider2 :
-      hover_bar == 4 ? slider4 :
-      hover_bar == 5 ? slider5 :
-      hover_bar == 6 ? slider6 :
-      hover_bar == 7 ? slider7 :
-      hover_bar == 8 ? slider8 :
-      hover_bar == 9 ? slider9 : slider10;
+      hover_bar == 1 ? slider6 :
+      hover_bar == 2 ? slider8 :
+      hover_bar == 3 ? slider7 :
+      hover_bar == 4 ? slider9 :
+      hover_bar == 5 ? slider10 :
+      hover_bar == 6 ? slider11 :
+      hover_bar == 7 ? slider12 :
+      hover_bar == 8 ? slider13 :
+      hover_bar == 9 ? slider14 : slider15;
   );
 );
 
 // --- drag actions ---
 (mouse_l && ui_mode == 1) ? (
   mouse_alt ? (
-    slider2 = ui_drag_start_v3 - (mouse_y - ui_drag_start_y) * 0.0028 / ui_s;
-    slider2 < 0 ? slider2 = 0;
-    slider2 > 1 ? slider2 = 1;
+    slider7 = ui_drag_start_v3 - (mouse_y - ui_drag_start_y) * 0.0028 / ui_s;
+    slider7 < 0 ? slider7 = 0;
+    slider7 > 1 ? slider7 = 1;
   ) : mouse_ctrl ? (
-    slider1 = ui_drag_start_v1 + (mouse_x - ui_drag_start_x) * 0.0040 / ui_s;
-    slider1 < -1 ? slider1 = -1;
-    slider1 > 1 ? slider1 = 1;
+    slider6 = ui_drag_start_v1 + (mouse_x - ui_drag_start_x) * 0.0040 / ui_s;
+    slider6 < -1 ? slider6 = -1;
+    slider6 > 1 ? slider6 = 1;
   ) : mouse_shift ? (
-    slider1 = ui_drag_start_v1 + (mouse_x - ui_drag_start_x) * 0.00135 / ui_s;
-    slider3 = ui_drag_start_v2 - (mouse_y - ui_drag_start_y) * 0.00135 / ui_s;
-    slider1 < -1 ? slider1 = -1; slider1 > 1 ? slider1 = 1;
-    slider3 < -1 ? slider3 = -1; slider3 > 1 ? slider3 = 1;
-    rr = sqrt(slider1*slider1 + slider3*slider3);
-    rr > 1 ? (slider1 /= rr; slider3 /= rr;);
+    slider6 = ui_drag_start_v1 + (mouse_x - ui_drag_start_x) * 0.00135 / ui_s;
+    slider8 = ui_drag_start_v2 - (mouse_y - ui_drag_start_y) * 0.00135 / ui_s;
+    slider6 < -1 ? slider6 = -1; slider6 > 1 ? slider6 = 1;
+    slider8 < -1 ? slider8 = -1; slider8 > 1 ? slider8 = 1;
+    rr = sqrt(slider6*slider6 + slider8*slider8);
+    rr > 1 ? (slider6 /= rr; slider8 /= rr;);
   ) : (
     dxn = (mouse_x - cx) / (room_hw*0.82);
     dyn = (cy - mouse_y) / (room_hd*0.82);
@@ -1323,13 +2540,13 @@ mouse_wheel != 0 ? (
       dxn /= rr;
       dyn /= rr;
     );
-    slider1 = dxn;
-    slider3 = dyn;
+    slider6 = dxn;
+    slider8 = dyn;
   );
   sliderchange(-1.0);
 );
 
-(mouse_l && ui_mode >= 101) ? (
+(mouse_l && ui_mode >= 101 && ui_mode < 200) ? (
   sid = ui_mode - 100;
   sid == 1 ? (mn=-1; mx=1;) :
   sid == 2 ? (mn=-1; mx=1;) :
@@ -1353,18 +2570,34 @@ mouse_wheel != 0 ? (
     v = mn + nrm * (mx - mn);
   );
 
-  sid == 1 ? slider1 = v :
-  sid == 2 ? slider3 = v :
-  sid == 3 ? slider2 = v :
-  sid == 4 ? slider4 = v :
-  sid == 5 ? slider5 = v :
-  sid == 6 ? slider6 = v :
-  sid == 7 ? slider7 = v :
-  sid == 8 ? slider8 = v :
-  sid == 9 ? slider9 = v : slider10 = v;
+  sid == 1 ? slider6 = v :
+  sid == 2 ? slider8 = v :
+  sid == 3 ? slider7 = v :
+  sid == 4 ? slider9 = v :
+  sid == 5 ? slider10 = v :
+  sid == 6 ? slider11 = v :
+  sid == 7 ? slider12 = v :
+  sid == 8 ? slider13 = v :
+  sid == 9 ? slider14 = v : slider15 = v;
 
   sliderchange(-1.0);
 );
+
+(mouse_l && ui_mode >= 201 && ui_mode < 300) ? (
+  sid = ui_mode - 200;
+  sid == 1 ? (mn=1; mx=3;) : sid == 2 ? (mn=5; mx=250;) : (mn=0; mx=1;);
+  mouse_shift ? (
+    v = ui_drag_start_v1 + (mouse_x - ui_drag_start_x) / adv_barw * (mx - mn) * 0.25;
+  ) : (
+    nrm = (mouse_x - adv_barx) / adv_barw;
+    nrm < 0 ? nrm = 0; nrm > 1 ? nrm = 1;
+    v = mn + nrm * (mx - mn);
+  );
+  v < mn ? v = mn; v > mx ? v = mx;
+  sid == 1 ? slider17 = v : sid == 2 ? slider18 = v : slider19 = v;
+  sliderchange(-1.0);
+);
+
 
 // finalize drag
 (!mouse_l && ui_prev_l && ui_mode) ? (
@@ -1377,20 +2610,31 @@ ui_prev_l = mouse_l;
 ui_prev_r = mouse_r;
 
 // refresh for drawing after interaction
-ui_lat = slider1;
-ui_dist = slider2;
-ui_fb = slider3;
-ui_throw = slider4;
-ui_size = slider5;
-ui_push = slider6;
-ui_room = slider7;
-ui_occ = slider8;
-ui_motion = slider9;
-ui_trim = slider10;
-ui_safe = slider11 >= 0.5 ? 1 : 0;
-ui_curve = slider12;
-ui_smooth = slider13;
-ui_rsize = slider14;
+ui_base_lat = slider6;
+ui_base_dist = slider7;
+ui_base_fb = slider8;
+ui_link_view = (slider4 >= 0.5 && last_manager_active) ? 1 : 0;
+ui_lat = ui_link_view ? last_effective_lat : ui_base_lat;
+ui_dist = ui_link_view ? last_effective_dist_n : ui_base_dist;
+ui_fb = ui_link_view ? last_effective_fb : ui_base_fb;
+ui_dist_vis = ui_dist;
+ui_dist_vis < 0 ? ui_dist_vis = 0;
+ui_dist_vis > 1 ? ui_dist_vis = 1;
+ui_throw = slider9;
+ui_size = slider10;
+ui_push = slider11;
+ui_room = slider12;
+ui_occ = slider13;
+ui_motion = slider14;
+ui_trim = slider15;
+ui_safe = slider16 >= 0.5 ? 1 : 0;
+ui_curve = slider17;
+ui_smooth = slider18;
+ui_rsize = slider19;
+ui_link = slider4 >= 0.5 ? 1 : 0;
+ui_obj_id = floor(slider3 + 0.5);
+ui_mgr_amt = slider5;
+ui_target_mgr = floor(slider20 + 0.5);
 
 pos_r = sqrt(ui_lat*ui_lat + ui_fb*ui_fb);
 pos_r > 1 ? (
@@ -1458,12 +2702,18 @@ fs1 < 12 ? fs1 = 12; fs2 < 10 ? fs2 = 10; fs3 < 9 ? fs3 = 9; fs4 < 8 ? fs4 = 8;
 // title
 gfx_setfont(1,"Arial",fs1,'b');
 gfx_set(txt_r,txt_g,txt_b,1);
-gfx_x = pad; gfx_y = pad*0.45; gfx_printf("Hyperreal 3D Panner V6.2.1");
+gfx_x = pad; gfx_y = pad*0.45; gfx_printf("Hyperreal 3D Panner V6.12.0");
 
 gfx_setfont(2,"Arial",fs2);
 gfx_set(mut_r,mut_g,mut_b,1);
 gfx_x = pad; gfx_y = pad*0.45 + fs1 + 1*ui_s;
-gfx_printf("Perceptual Position | visual cues | aligned hover help | automation-safe spatial throw");
+gfx_printf("UI-only GFX controls | standalone by default | opt-in Manager Mode | runtime IPC");
+
+(ui_link) ? (
+  gfx_set(last_manager_active ? ok_r : warn_r, last_manager_active ? ok_g : warn_g, last_manager_active ? ok_b : warn_b, 0.95);
+  gfx_x = gfx_w - 286*ui_s; gfx_y = pad*0.45 + 2*ui_s;
+  last_manager_active ? gfx_printf("MANAGER  Obj %02.0f  Cam %+.1f deg", last_object_id, last_camera_rot) : gfx_printf("MANAGER ARMED  Obj %02.0f", last_object_id);
+);
 
 // main surfaces
 gfx_set(panel_r,panel_g,panel_b,1);
@@ -1520,7 +2770,7 @@ range_min = min(room_hw, room_hd);
 range_r1 = range_min * 0.25;
 range_r2 = range_min * 0.50;
 range_r3 = range_min * 0.75;
-range_active = range_min * (0.18 + 0.70*ui_dist);
+range_active = range_min * (0.18 + 0.70*ui_dist_vis);
 
 // static reference rings
 gfx_set(0.70,0.74,0.84,0.10); gfx_circle(cx,cy,range_r1,0,1);
@@ -1528,7 +2778,7 @@ gfx_set(0.70,0.74,0.84,0.08); gfx_circle(cx,cy,range_r2,0,1);
 gfx_set(0.70,0.74,0.84,0.06); gfx_circle(cx,cy,range_r3,0,1);
 
 // active distance ring brightens and expands with Distance
-gfx_set(0.78,0.82,0.92,0.13 + 0.14*ui_dist);
+gfx_set(0.78,0.82,0.92,0.13 + 0.14*ui_dist_vis);
 gfx_circle(cx,cy,range_active,0,1);
 
 // small distance tick marks along the placement ray
@@ -1538,9 +2788,9 @@ loop(seg_n,
   seg_t = seg_i / (seg_n + 1);
   seg_x = cx + (sx-cx) * seg_t;
   seg_y = cy + (sy-cy) * seg_t;
-  seg_a = (0.05 + 0.18*ui_dist) * seg_t;
+  seg_a = (0.05 + 0.18*ui_dist_vis) * seg_t;
   gfx_set(0.78,0.82,0.92,seg_a);
-  gfx_circle(seg_x, seg_y, (1.5 + 2.8*ui_dist)*ui_s, 1, 1);
+  gfx_circle(seg_x, seg_y, (1.5 + 2.8*ui_dist_vis)*ui_s, 1, 1);
   seg_i += 1;
 );
 
@@ -1563,7 +2813,7 @@ gfx_x = room_r - 28*ui_s; gfx_y = room_b - 18*ui_s; gfx_printf("FAR");
 );
 
 // direct visual path
-gfx_set(src_cr,src_cg,src_cb,0.58 + 0.20*(1-ui_dist));
+gfx_set(src_cr,src_cg,src_cb,0.58 + 0.20*(1-ui_dist_vis));
 gfx_line(cx, cy, sx, sy);
 
 // cue ghost path
@@ -1695,10 +2945,10 @@ focus_a_ui = 0.62 * (1 - ui_size);
 );
 
 // main source orb: size changes mildly; distance only dims the edge, avoiding size/distance confusion
-core_a = 1 - 0.16*ui_dist;
+core_a = 1 - 0.16*ui_dist_vis;
 gfx_set(src_cr,src_cg,src_cb,core_a);
 gfx_circle(sx, sy, dot_r, 1, 1);
-gfx_set(1,0.88,0.55,0.35 + 0.20*(1-ui_dist));
+gfx_set(1,0.88,0.55,0.35 + 0.20*(1-ui_dist_vis));
 gfx_circle(sx, sy, dot_r + 1.8*ui_s, 0, 1);
 gfx_set(0.12,0.12,0.13,1); gfx_circle(sx, sy, 2.6*ui_s, 1, 1);
 
@@ -1771,12 +3021,13 @@ gfx_rect(chip8x,chip_y,chip_w,chip_h); gfx_roundrect(chip8x,chip_y,chip_w,chip_h
 gfx_set(active ? src_cr : mut_r, active ? src_cg : mut_g, active ? src_cb : mut_b, 1);
 gfx_x = chip8x + 7*ui_s; gfx_y = chip_y + 5*ui_s; gfx_printf("Rear");
 
-// --- right card 1: summary ---
+// --- right card 1: standalone object summary ---
+// The manager-link wiring is intentionally hidden behind the side drawer.
 gfx_setfont(2,"Arial",fs2,'b');
 gfx_set(txt_r,txt_g,txt_b,1);
-gfx_x = c1x + 14*ui_s; gfx_y = c1y + 10*ui_s; gfx_printf("Position");
+gfx_x = c1x + 14*ui_s; gfx_y = c1y + 10*ui_s; gfx_printf("Object");
 
-// safe toggle
+// safe toggle remains on the primary surface because it matters for normal automation.
 gfx_set(ui_safe ? ok_r : warn_r, ui_safe ? ok_g : warn_g, ui_safe ? ok_b : warn_b, hover_safe ? 0.95 : 0.75);
 gfx_rect(safe_x,safe_y,safe_w,safe_h);
 gfx_roundrect(safe_x,safe_y,safe_w,safe_h,8*ui_s,1);
@@ -1784,18 +3035,23 @@ gfx_set(0.08,0.09,0.11,1);
 gfx_setfont(4,"Arial",fs4,'b');
 gfx_x = safe_x + 9*ui_s; gfx_y = safe_y + 6*ui_s; ui_safe ? gfx_printf("AUTO SAFE") : gfx_printf("PERFORM");
 
+// compact, isolation-safe status
 gfx_setfont(3,"Arial",fs3);
 gfx_set(0.88,0.91,0.96,1);
-gfx_x = c1x + 14*ui_s; gfx_y = c1y + 34*ui_s; gfx_printf("Visual %+.1f deg", last_visual_az);
-gfx_x = c1x + 14*ui_s; gfx_y = c1y + 51*ui_s; gfx_printf("Cue    %+.1f deg", last_cue_az);
-gfx_x = c1x + c1w*0.55; gfx_y = c1y + 34*ui_s; gfx_printf("%.2f m", last_dist_m);
-gfx_x = c1x + c1w*0.55; gfx_y = c1y + 51*ui_s;
-frontness >= sideness && frontness >= backness ? gfx_printf("Zone FRONT") : sideness >= backness ? gfx_printf("Zone SIDE") : gfx_printf("Zone BACK");
+gfx_x = c1x + 14*ui_s; gfx_y = c1y + 36*ui_s; gfx_printf("Visual  %+.1f deg", last_visual_az);
+gfx_x = c1x + 14*ui_s; gfx_y = c1y + 54*ui_s; gfx_printf("Cue     %+.1f deg", last_cue_az);
+gfx_x = c1x + 14*ui_s; gfx_y = c1y + 72*ui_s; gfx_printf("Range   %.1f m", last_dist_m);
 
 gfx_setfont(4,"Arial",fs4);
 gfx_set(mut_r,mut_g,mut_b,1);
-gfx_x = c1x + 14*ui_s; gfx_y = c1y + 70*ui_s;
-gfx_printf("Throw %.0f%% -> DSP %.0f%% | Smooth %.0f ms", ui_throw*100, last_throw_dsp*100, last_smooth_ms);
+gfx_x = c1x + 14*ui_s; gfx_y = c1y + 92*ui_s; gfx_printf("Manager "); gfx_drawstr(#target_manager);
+gfx_x = c1x + 14*ui_s; gfx_y = c1y + 108*ui_s; gfx_printf("Object "); gfx_drawstr(#object_name);
+gfx_x = c1x + 14*ui_s; gfx_y = c1y + 124*ui_s;
+ui_link ? (
+  last_manager_active ? gfx_printf("Manager active | Obj %02.0f", last_object_id) : gfx_printf("Manager armed | choose Manager by name");
+) : (
+  gfx_printf("Standalone mode - manager ignored");
+);
 
 // --- right card 2: control lanes ---
 gfx_setfont(2,"Arial",fs2,'b');
@@ -1828,9 +3084,13 @@ gfx_set(mut_r,mut_g,mut_b,1); gfx_x = valx; gfx_y = b2y-1*ui_s; gfx_printf("%+.2
 // 3 Distance
 gfx_set(0.92,0.94,0.97,1); gfx_x = barx; gfx_y = b3y-label_lift; gfx_printf("Distance");
 gfx_set(0.18,0.20,0.24,1); gfx_rect(barx,b3y,barw,barh); gfx_roundrect(barx,b3y,barw,barh,6*ui_s,1);
-gfx_set(0.78,0.81,0.90,1); gfx_rect(barx,b3y,barw*ui_dist,barh);
-gfx_set(1,1,1, hover_bar==3 ? 0.95 : 0.70); gfx_circle(barx + barw*ui_dist, b3y + barh*0.5, 4.0*ui_s, 1, 1);
-gfx_set(mut_r,mut_g,mut_b,1); gfx_x = valx; gfx_y = b3y-1*ui_s; gfx_printf("%.2fm", last_dist_m);
+gfx_set(0.78,0.81,0.90,1); gfx_rect(barx,b3y,barw*ui_dist_vis,barh);
+gfx_set(1,1,1, hover_bar==3 ? 0.95 : 0.70); gfx_circle(barx + barw*ui_dist_vis, b3y + barh*0.5, 4.0*ui_s, 1, 1);
+ui_link_view && last_effective_dist_n > 1 ? (
+  gfx_set(0.24,0.78,1.0,0.85);
+  gfx_line(barx+barw-2*ui_s,b3y-2*ui_s,barx+barw-2*ui_s,b3y+barh+2*ui_s);
+);
+gfx_set(mut_r,mut_g,mut_b,1); gfx_x = valx; gfx_y = b3y-1*ui_s; gfx_printf("%.1fm", last_dist_m);
 
 // 4 Throw
 gfx_set(0.92,0.94,0.97,1); gfx_x = barx; gfx_y = b4y-label_lift; gfx_printf("Spatial Throw");
@@ -1883,36 +3143,175 @@ gfx_set(0.10,0.10,0.12,0.85); gfx_line(zero_x, b10y, zero_x, b10y+barh);
 gfx_set(1,1,1, hover_bar==10 ? 0.95 : 0.70); gfx_circle(barx + barw*trim_n, b10y + barh*0.5, 4.0*ui_s, 1, 1);
 gfx_set(mut_r,mut_g,mut_b,1); gfx_x = valx; gfx_y = b10y-1*ui_s; gfx_printf("%.1fdB", ui_trim);
 
-// --- right card 3: visual key + advanced readouts ---
+// --- right card 3: UI-only advanced controls ---
 gfx_setfont(2,"Arial",fs2,'b');
 gfx_set(txt_r,txt_g,txt_b,1);
-gfx_x = c3x + 14*ui_s; gfx_y = c3y + 10*ui_s; gfx_printf("Visual Keys");
+gfx_x = c3x + 14*ui_s; gfx_y = c3y + 10*ui_s; gfx_printf("Advanced");
 
 gfx_setfont(4,"Arial",fs4);
-gfx_set(0.90,0.92,0.96,1);
-line_h = fs4 + 4*ui_s;
-c3tx = c3x + 14*ui_s;
-c3ty = c3y + 30*ui_s;
-gfx_x = c3tx; gfx_y = c3ty + 0*line_h; gfx_printf("Size = orange halo/cloud");
-gfx_x = c3tx; gfx_y = c3ty + 1*line_h; gfx_printf("Distance = grey rings/dashes");
-gfx_x = c3tx; gfx_y = c3ty + 2*line_h; gfx_printf("Push Out = listener shell");
-(c3h > 88*ui_s) ? (
-  gfx_x = c3tx; gfx_y = c3ty + 3*line_h; gfx_printf("Room = cyan | Motion = green");
-);
-(c3h > 108*ui_s) ? (
+curve_n = (ui_curve - 1) / 2;
+smooth_n = (ui_smooth - 5) / 245;
+rsize_n = ui_rsize;
+
+// Cue Curve
+gfx_set(0.90,0.92,0.96,1); gfx_x = adv_barx; gfx_y = adv1y - 12*ui_s; gfx_printf("Cue Curve");
+gfx_set(0.18,0.20,0.24,1); gfx_rect(adv_barx,adv1y,adv_barw,adv_h); gfx_roundrect(adv_barx,adv1y,adv_barw,adv_h,5*ui_s,1);
+gfx_set(src_cr,src_cg,src_cb,1); gfx_rect(adv_barx,adv1y,adv_barw*curve_n,adv_h);
+gfx_set(1,1,1,hover_adv==1?0.95:0.70); gfx_circle(adv_barx+adv_barw*curve_n, adv1y+adv_h*0.5, 3.2*ui_s,1,1);
+gfx_set(mut_r,mut_g,mut_b,1); gfx_x = adv_valx; gfx_y = adv1y - 2*ui_s; gfx_printf("%.2f", ui_curve);
+
+// Motion Smooth
+gfx_set(0.90,0.92,0.96,1); gfx_x = adv_barx; gfx_y = adv2y - 12*ui_s; gfx_printf("Smooth");
+gfx_set(0.18,0.20,0.24,1); gfx_rect(adv_barx,adv2y,adv_barw,adv_h); gfx_roundrect(adv_barx,adv2y,adv_barw,adv_h,5*ui_s,1);
+gfx_set(ok_r,ok_g,ok_b,1); gfx_rect(adv_barx,adv2y,adv_barw*smooth_n,adv_h);
+gfx_set(1,1,1,hover_adv==2?0.95:0.70); gfx_circle(adv_barx+adv_barw*smooth_n, adv2y+adv_h*0.5, 3.2*ui_s,1,1);
+gfx_set(mut_r,mut_g,mut_b,1); gfx_x = adv_valx; gfx_y = adv2y - 2*ui_s; gfx_printf("%.0fms", ui_smooth);
+
+// Room Size
+gfx_set(0.90,0.92,0.96,1); gfx_x = adv_barx; gfx_y = adv3y - 12*ui_s; gfx_printf("Room Size");
+gfx_set(0.18,0.20,0.24,1); gfx_rect(adv_barx,adv3y,adv_barw,adv_h); gfx_roundrect(adv_barx,adv3y,adv_barw,adv_h,5*ui_s,1);
+gfx_set(bounce_r,bounce_g,bounce_b,1); gfx_rect(adv_barx,adv3y,adv_barw*rsize_n,adv_h);
+gfx_set(1,1,1,hover_adv==3?0.95:0.70); gfx_circle(adv_barx+adv_barw*rsize_n, adv3y+adv_h*0.5, 3.2*ui_s,1,1);
+gfx_set(mut_r,mut_g,mut_b,1); gfx_x = adv_valx; gfx_y = adv3y - 2*ui_s; gfx_printf("%.2f", ui_rsize);
+
+(c3h > 124*ui_s) ? (
   gfx_set(mut_r,mut_g,mut_b,1);
-  gfx_x = c3tx; gfx_y = c3ty + 5*line_h; gfx_printf("Drag=place | Wheel=distance | Ctrl=throw");
-);
-(c3h > 128*ui_s) ? (
-  gfx_set(mut_r,mut_g,mut_b,1);
-  gfx_x = c3tx; gfx_y = c3ty + 6*line_h; gfx_printf("Curve %.2f -> eff %.2f | ITD %.3f ms", ui_curve, last_cue_curve_eff, last_itd_ms);
+  gfx_x = adv_barx; gfx_y = adv3y + 16*ui_s; gfx_printf("Wheel/drag these; native sliders are hidden.");
 );
 
 // footer
 gfx_setfont(4,"Arial",fs4);
 gfx_set(mut_r,mut_g,mut_b,1);
 gfx_x = pad; gfx_y = gfx_h - foot_h + 7*ui_s;
-gfx_printf("V6.2.1: aligned hover help; slider hitboxes and tooltip hitboxes now share the same lane geometry.");
+gfx_printf("V6.12.0: Standalone by default; switch Mode to Manager to opt into manager-name routing.");
+
+// --- Manager Link side tab + drawer overlay ---
+// Tab is the only visible Manager affordance in standalone mode.
+gfx_set(ui_drawer_open ? 0.16 : 0.12, ui_drawer_open ? 0.28 : 0.16, ui_drawer_open ? 0.38 : 0.22, 0.98);
+gfx_rect(drawer_tab_x, drawer_tab_y, drawer_tab_w, drawer_tab_h);
+gfx_roundrect(drawer_tab_x, drawer_tab_y, drawer_tab_w, drawer_tab_h, 10*ui_s, 1);
+gfx_set(0.24,0.78,1.0, hover_drawer_tab ? 0.95 : 0.68);
+gfx_roundrect(drawer_tab_x, drawer_tab_y, drawer_tab_w, drawer_tab_h, 10*ui_s, 0);
+gfx_setfont(4,"Arial",fs4,'b');
+gfx_set(0.76,0.88,0.98,1);
+gfx_x = drawer_tab_x + 7*ui_s; gfx_y = drawer_tab_y + 16*ui_s; gfx_printf("MGR");
+gfx_x = drawer_tab_x + 7*ui_s; gfx_y = drawer_tab_y + 34*ui_s; gfx_printf("LNK");
+gfx_set(ui_link ? ok_r : mut_r, ui_link ? ok_g : mut_g, ui_link ? ok_b : mut_b, 1);
+gfx_circle(drawer_tab_x + drawer_tab_w*0.5, drawer_tab_y + drawer_tab_h - 16*ui_s, 4.5*ui_s, 1, 1);
+
+ui_drawer_open ? (
+  // shadow
+  gfx_set(0,0,0,0.38);
+  gfx_rect(drawer_x + 5*ui_s, drawer_y + 5*ui_s, drawer_w, drawer_h);
+  gfx_roundrect(drawer_x + 5*ui_s, drawer_y + 5*ui_s, drawer_w, drawer_h, 14*ui_s, 1);
+
+  gfx_set(0.075,0.087,0.118,0.98);
+  gfx_rect(drawer_x, drawer_y, drawer_w, drawer_h);
+  gfx_roundrect(drawer_x, drawer_y, drawer_w, drawer_h, 14*ui_s, 1);
+  gfx_set(0.24,0.78,1.0,0.74);
+  gfx_roundrect(drawer_x, drawer_y, drawer_w, drawer_h, 14*ui_s, 0);
+
+  gfx_setfont(2,"Arial",fs2,'b');
+  gfx_set(txt_r,txt_g,txt_b,1);
+  gfx_x = drawer_x + 14*ui_s; gfx_y = drawer_y + 12*ui_s; gfx_printf("Manager Link Drawer");
+  gfx_setfont(4,"Arial",fs4);
+  gfx_set(mut_r,mut_g,mut_b,1);
+  gfx_x = drawer_x + 14*ui_s; gfx_y = drawer_y + 31*ui_s; gfx_printf("Name this source, choose a Manager, then switch Mode to Manager when wanted.");
+
+  // Manager text box
+  gfx_setfont(4,"Arial",fs4,'b');
+  gfx_set(mut_r,mut_g,mut_b,1);
+  gfx_x = field_x; gfx_y = bus_y - 12*ui_s; gfx_printf("Manager");
+  gfx_set(0.050,0.062,0.086,1);
+  gfx_rect(field_x,bus_y,field_w,box_h);
+  gfx_set((hover_bus_box || ui_text_active==1) ? 0.47 : 0.28, (hover_bus_box || ui_text_active==1) ? 0.54 : 0.32, (hover_bus_box || ui_text_active==1) ? 0.68 : 0.40, 0.92);
+  gfx_roundrect(field_x,bus_y,field_w,box_h,6*ui_s,0);
+  gfx_set(0.90,0.93,0.98,1);
+  gfx_setfont(4,"Arial",fs4);
+  gfx_x = field_x + 6*ui_s; gfx_y = bus_y + 4*ui_s;
+  ui_text_active == 1 ? gfx_drawstr(#p3d_edit_text) : gfx_drawstr(#target_manager);
+  (ui_text_active == 1 && (floor(ui_text_frames/18)%2)==0) ? gfx_drawstr("_");
+  gfx_set(hover_scene_btn || ui_scene_menu ? 0.22 : 0.13, hover_scene_btn || ui_scene_menu ? 0.28 : 0.17, hover_scene_btn || ui_scene_menu ? 0.38 : 0.24, 1);
+  gfx_rect(scene_btn_x,bus_y,scene_btn_w,box_h); gfx_roundrect(scene_btn_x,bus_y,scene_btn_w,box_h,6*ui_s,1);
+  gfx_set(txt_r,txt_g,txt_b,1); gfx_x = scene_btn_x + 6*ui_s; gfx_y = bus_y + 4*ui_s; gfx_printf("v");
+
+  // Object Name text box
+  gfx_setfont(4,"Arial",fs4,'b');
+  gfx_set(mut_r,mut_g,mut_b,1);
+  gfx_x = field_x; gfx_y = name_y - 12*ui_s; gfx_printf("Object Name");
+  gfx_set(0.050,0.062,0.086,1);
+  gfx_rect(field_x,name_y,field_w,box_h);
+  gfx_set((hover_name_box || ui_text_active==2) ? 0.47 : 0.28, (hover_name_box || ui_text_active==2) ? 0.54 : 0.32, (hover_name_box || ui_text_active==2) ? 0.68 : 0.40, 0.92);
+  gfx_roundrect(field_x,name_y,field_w,box_h,6*ui_s,0);
+  gfx_set(0.90,0.93,0.98,1);
+  gfx_setfont(4,"Arial",fs4);
+  (ui_text_active == 2 && ui_text_select_all) ? (gfx_set(0.24,0.78,1.0,0.22); gfx_rect(field_x+4*ui_s,name_y+3*ui_s,field_w-8*ui_s,box_h-6*ui_s); gfx_set(txt_r,txt_g,txt_b,1););
+  gfx_x = field_x + 6*ui_s; gfx_y = name_y + 4*ui_s;
+  ui_text_active == 2 ? gfx_drawstr(#p3d_edit_text) : gfx_drawstr(#object_name);
+  (ui_text_active == 2 && (floor(ui_text_frames/18)%2)==0) ? gfx_drawstr("_");
+
+  // Object IDs and numeric manager slots are internal; visible routing is Mode + Name -> Manager.
+
+  // Standalone/Manager toggle - explicit default OFF.
+  gfx_setfont(4,"Arial",fs4,'b');
+  gfx_set(mut_r,mut_g,mut_b,1);
+  gfx_x = link_btn_x; gfx_y = link_btn_y - 14*ui_s; gfx_printf("Mode");
+  gfx_set(ui_link ? ok_r : 0.18, ui_link ? ok_g : 0.21, ui_link ? ok_b : 0.28, hover_link_btn ? 0.95 : 0.86);
+  gfx_rect(link_btn_x,link_btn_y,link_btn_w,link_btn_h); gfx_roundrect(link_btn_x,link_btn_y,link_btn_w,link_btn_h,9*ui_s,1);
+  gfx_set(0.07,0.08,0.10,1);
+  gfx_x = link_btn_x + 12*ui_s; gfx_y = link_btn_y + 8*ui_s;
+  ui_link ? gfx_printf("MANAGER") : gfx_printf("STANDALONE");
+
+  // Manager amount is intentionally internal: Manager Mode is a clear on/off user choice.
+  gfx_setfont(4,"Arial",fs4);
+  gfx_set(mut_r,mut_g,mut_b,1);
+  gfx_x = link_btn_x; gfx_y = link_btn_y + link_btn_h + 8*ui_s;
+  ui_link ? gfx_printf("Only the named Manager can move this panner.") : gfx_printf("Standalone ignores all Manager movement.");
+
+  // Status/readout
+  link_status_y = link_btn_y + link_btn_h + 28*ui_s;
+  gfx_setfont(4,"Arial",fs4);
+  gfx_set(last_manager_active ? ok_r : (ui_link ? warn_r : mut_r), last_manager_active ? ok_g : (ui_link ? warn_g : mut_g), last_manager_active ? ok_b : (ui_link ? warn_b : mut_b), 1);
+  gfx_x = field_x; gfx_y = link_status_y;
+  ui_link ? (last_manager_active ? gfx_printf("Manager active | Cam %+.1f deg", last_camera_rot) : gfx_printf("Manager mode: waiting for matching Name")) : gfx_printf("Standalone: manager ignored");
+  gfx_set(mut_r,mut_g,mut_b,1);
+  gfx_x = field_x; gfx_y = link_status_y + 17*ui_s; gfx_printf("World %+.0f | View %+.0f | Cue %+.0f", last_world_az, last_visual_az, last_cue_az);
+  gfx_x = field_x; gfx_y = link_status_y + 34*ui_s; gfx_printf("Backspace/Delete edit text. Enter commits. Manager Mode must be enabled to follow.");
+
+  // Available managers dropdown. Panners subscribe by Manager Name.
+  ui_scene_menu ? (
+    menu_rows = scene_rows_vis;
+    menu_rows < 1 ? menu_rows = 1;
+    menu_rows > 6 ? menu_rows = 6;
+    menu_h = menu_rows * scene_row_h + 6*ui_s;
+    gfx_set(0,0,0,0.42); gfx_rect(scene_menu_x+3*ui_s, scene_menu_y+3*ui_s, scene_menu_w, menu_h); gfx_roundrect(scene_menu_x+3*ui_s, scene_menu_y+3*ui_s, scene_menu_w, menu_h, 8*ui_s, 1);
+    gfx_set(0.045,0.055,0.075,0.98); gfx_rect(scene_menu_x, scene_menu_y, scene_menu_w, menu_h); gfx_roundrect(scene_menu_x, scene_menu_y, scene_menu_w, menu_h, 8*ui_s, 1);
+    gfx_set(0.24,0.78,1.0,0.65); gfx_roundrect(scene_menu_x, scene_menu_y, scene_menu_w, menu_h, 8*ui_s, 0);
+
+    scene_real_count <= 0 ? (
+      yy = scene_menu_y + 3*ui_s;
+      gfx_set(0.08,0.10,0.14,1);
+      gfx_rect(scene_menu_x + 4*ui_s, yy, scene_menu_w - 8*ui_s, scene_row_h-1*ui_s);
+      gfx_setfont(4,"Arial",fs4,'b'); gfx_set(txt_r,txt_g,txt_b,1); gfx_x = scene_menu_x + 10*ui_s; gfx_y = yy + 3*ui_s; gfx_printf("Manager");
+      gfx_set(mut_r,mut_g,mut_b,1); gfx_x = scene_menu_x + scene_menu_w - 86*ui_s; gfx_y = yy + 3*ui_s; gfx_printf("no manager");
+    ) : (
+      scene_drawn = 0;
+      scene_i = 0;
+      loop(P3D_MAX_SCENES,
+        (scene_i < p3d_ui_scene_count && scene_drawn < 6) ? (
+          yy = scene_menu_y + 3*ui_s + scene_drawn*scene_row_h;
+          gfx_set(scene_hover_idx == scene_drawn ? 0.17 : 0.08, scene_hover_idx == scene_drawn ? 0.24 : 0.10, scene_hover_idx == scene_drawn ? 0.32 : 0.14, 1);
+          gfx_rect(scene_menu_x + 4*ui_s, yy, scene_menu_w - 8*ui_s, scene_row_h-1*ui_s);
+          p3d_ui_scene_copy_nth(scene_i, #p3d_scene_draw);
+          gfx_setfont(4,"Arial",fs4); gfx_set(txt_r,txt_g,txt_b,1); gfx_x = scene_menu_x + 10*ui_s; gfx_y = yy + 3*ui_s; gfx_drawstr(#p3d_scene_draw);
+          gfx_set(mut_r,mut_g,mut_b,1); gfx_x = scene_menu_x + scene_menu_w - 54*ui_s; gfx_y = yy + 3*ui_s; gfx_printf("live");
+          scene_drawn += 1;
+        );
+        scene_i += 1;
+      );
+    );
+  );
+);
 
 // --- hover tooltip card ---
 (tooltip_show) ? (
@@ -1987,7 +3386,10 @@ gfx_printf("V6.2.1: aligned hover help; slider hitboxes and tooltip hitboxes now
   tip_id == 107 ? gfx_printf("Room") :
   tip_id == 108 ? gfx_printf("Occlusion") :
   tip_id == 109 ? gfx_printf("Motion") :
-  tip_id == 110 ? gfx_printf("Output Trim") : gfx_printf("Help");
+  tip_id == 110 ? gfx_printf("Output Trim") :
+  tip_id == 201 ? gfx_printf("Cue Curve") :
+  tip_id == 202 ? gfx_printf("Motion Smooth") :
+  tip_id == 203 ? gfx_printf("Room Size") : gfx_printf("Help");
 
   gfx_setfont(4,"Arial",fs4);
   gfx_set(0.82,0.86,0.93,1);
@@ -2087,5 +3489,17 @@ gfx_printf("V6.2.1: aligned hover help; slider hitboxes and tooltip hitboxes now
     gfx_x = tip_tx; gfx_y = tip_l1; gfx_printf("Final gain after spatial processing.");
     gfx_x = tip_tx; gfx_y = tip_l2; gfx_printf("Use for level match, not distance.");
     gfx_x = tip_tx; gfx_y = tip_l3; gfx_printf("Right-click resets to 0 dB.");
+  ) : tip_id == 201 ? (
+    gfx_x = tip_tx; gfx_y = tip_l1; gfx_printf("Compresses moderate visual angles.");
+    gfx_x = tip_tx; gfx_y = tip_l2; gfx_printf("Higher = 45 deg sounds less extreme.");
+    gfx_x = tip_tx; gfx_y = tip_l3; gfx_printf("Right-click resets to 2.00.");
+  ) : tip_id == 202 ? (
+    gfx_x = tip_tx; gfx_y = tip_l1; gfx_printf("Movement smoothing time in ms.");
+    gfx_x = tip_tx; gfx_y = tip_l2; gfx_printf("Automation Safe enforces a floor.");
+    gfx_x = tip_tx; gfx_y = tip_l3; gfx_printf("Right-click resets to 90 ms.");
+  ) : tip_id == 203 ? (
+    gfx_x = tip_tx; gfx_y = tip_l1; gfx_printf("Scales early-bounce geometry.");
+    gfx_x = tip_tx; gfx_y = tip_l2; gfx_printf("Higher = larger room timing.");
+    gfx_x = tip_tx; gfx_y = tip_l3; gfx_printf("Right-click resets to 0.55.");
   );
 );
