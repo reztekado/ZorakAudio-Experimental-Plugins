@@ -1,8 +1,8 @@
-desc:3DPannerManager V1.8.2 (Manager-Name Link)
+desc:3DPannerManager V1.8.3 (Psychoacoustic Distance Scale)
 
 // #HELP: Manager-named camera controller for linked 3DPanner instances.
 // #HELP: Manager publishes its Name; panners choose that Manager Name and all routing IDs stay hidden.
-// #HELP: V1.8.2 lists matching panners by Manager Name; only panners whose Mode is Manager follow camera movement.
+// #HELP: V1.8.3 keeps the working Manager-Name link and drives the panner's psychoacoustic extended-distance model.
 // #HELP: Camera Rotation rotates the listener/camera around fixed sound objects. Objects stay mapped once; the camera moves.
 // #HELP: The linked-ID list is scrollable with the mouse wheel or the Linked List Scroll slider.
 // #TOOLTIP: UI-only manager. All visible controls live in GFX; hidden sliders remain the saved/automation backend.
@@ -26,7 +26,7 @@ slider4:0<-180,180,0.1>-Camera Rotation (deg)
 slider5:1<-2,2,0.01>-Rotation Scale
 // #TOOLTIP: Manager motion smoothing hint for future tracker bridge / panner-side motion management.
 slider6:90<5,250,1>-Automation Smooth (ms)
-// #TOOLTIP: Global linked-object distance scale. 1.00 = unchanged. Can push linked topology well beyond local panner distance.
+// #TOOLTIP: Global linked-object distance scale. 1.00 = unchanged. Large values feed the panner's psychoacoustic far-field model instead of just adding reverb.
 slider7:1<0.25,16,0.01>-Distance Scale
 // #TOOLTIP: Reserved bridge flag for Global Motion Tracker integration.
 slider8:0<0,1,1{Off,Listening}>-Tracker Input
@@ -751,7 +751,7 @@ fs_small = floor(10*ui_s); fs_small < 8 ? fs_small = 8;
 
 gfx_setfont(1,"Arial",fs_title,'b');
 gfx_set(0.94,0.96,0.99,1);
-gfx_x = pad; gfx_y = pad*0.45; gfx_printf("3DPannerManager V1.8.2");
+gfx_x = pad; gfx_y = pad*0.45; gfx_printf("3DPannerManager V1.8.3");
 gfx_setfont(2,"Arial",fs_body);
 gfx_set(0.58,0.64,0.74,1);
 gfx_x = pad; gfx_y = pad*0.45 + fs_title + 2*ui_s; gfx_printf("Camera Controller | only panners in Manager mode follow this Name | fixed objects, moving listener");

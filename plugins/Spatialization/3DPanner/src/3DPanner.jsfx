@@ -1,4 +1,4 @@
-desc:Hyperreal 3D Panner V6.12.0 (Standalone/Manager Mode)
+desc:Hyperreal 3D Panner V6.13.0 (Psychoacoustic Distance)
 
 // #HELP: Headphone-focused 3D panner using softened perceptual placement, microdelay, head shadow, pinna cues, distance loss, occlusion, and room cues.
 // #HELP: Drag the orange source in the stage canvas. X = Lateral, Y = Front/Rear. Mouse wheel changes Distance.
@@ -9,7 +9,7 @@ desc:Hyperreal 3D Panner V6.12.0 (Standalone/Manager Mode)
 // #HELP: Visual cues: Size = orange halo/cloud, Distance = grey range rings/dashes, Push Out = listener shell, Room = cyan bounces/wall glow, Motion = green trail.
 // #HELP: Hover any canvas cue, snap chip, Automation Safe button, or quick-control lane for inline guidance. Tooltips use exact hit zones and dock away from controls.
 // #HELP: Manager Link is opt-in. New instances start in Standalone mode and only follow a Manager after switching Mode to Manager.
-// #HELP: V6.12.0 defaults to Standalone, adds an explicit Standalone/Manager mode, links by Manager Name, and keeps auto Object IDs.
+// #HELP: V6.13.0 overhauls long-distance psychoacoustics: extended manager distances stay far/clear instead of just becoming reverby.
 // #HELP: V6.2.2 stabilizes Occlusion by applying blocked-source coloration after localization, preventing opposite-ear flicker.
 // #TOOLTIP: UI-only perceptual object panner. Main controls stay standalone-clean; Manager mode is explicit and opt-in.
 
@@ -73,7 +73,7 @@ slider19:0.55<0,1,0.001>-Room Size
 // #TOOLTIP: Internal cached manager slot. Panners route by Manager Name/IID, not this number.
 slider20:1<1,64,1>-Internal Manager Slot
 
-// V6.12.0 Manager model:
+// V6.13.0 Manager model:
 //   Sliders 6/8 store the object's fixed world placement.
 //   Standalone mode ignores managers and does not appear as a linked object.
 //   Manager mode subscribes by Manager Name and renders effective position = object world angle - camera yaw.
@@ -97,6 +97,37 @@ function p3d_wrap_deg(a) (
   while (a > 180) ( a -= 360; );
   while (a < -180) ( a += 360; );
   a;
+);
+
+function p3d_distance_m_from_n(n) local(b e d2 d3 m) (
+  // Perceptual meter mapping. Local Distance 0..1 resolves close-to-stage
+  // placement up to about 10 m. Manager-linked topology can extend n beyond
+  // 1.0 into a cinematic far field without feeding >1 values into the room
+  // and cue-stack laws that expect normalized distance.
+  n < 0 ? n = 0;
+  n > 4 ? n = 4;
+  b = n;
+  b > 1 ? b = 1;
+  d2 = b*b;
+  d3 = d2*b;
+  m = 0.20 + 9.80*(0.72*d2 + 0.28*d3);
+  n > 1 ? (
+    e = n - 1;
+    m += 10.0*e + 9.0*e*e;
+  );
+  m;
+);
+
+function p3d_far01_from_m(m) local(v den) (
+  // Log-distance perceptual weight. 10 m lands around mid-far; 100+ m is
+  // very far. This drives spectral/detail cues without turning Room into a
+  // giant wet/reverb multiplier.
+  m < 0.20 ? m = 0.20;
+  den = log(121.0) - log(1.20);
+  v = (log(1.0 + m) - log(1.20)) / den;
+  v < 0 ? v = 0;
+  v > 1 ? v = 1;
+  v;
 );
 
 
@@ -651,14 +682,8 @@ function p3d_service_registry() local(mb wr depth_delta side_delta topology dist
   base_n = last_effective_dist_n;
   base_n < 0 ? base_n = 0;
   base_n > 4 ? base_n = 4;
-  d2 = min(base_n, 1);
-  d3 = d2*d2*d2;
-  d2 = d2*d2;
-  last_dist_m = 0.18 + 8.82*(0.72*d2 + 0.28*d3);
-  base_n > 1 ? (
-    ext_dist = base_n - 1;
-    last_dist_m += 8.0*ext_dist + 18.0*ext_dist*ext_dist;
-  );
+  last_dist_m = p3d_distance_m_from_n(base_n);
+  last_far01 = p3d_far01_from_m(last_dist_m);
 
   p3d_seq += 1;
   p3d_publish_slot();
@@ -844,6 +869,7 @@ er_a8 = exp(-2*$pi*2600/srate);
 // sm_az is the softened/cue-scaled azimuth, not the visual placement angle.
 sm_az = 0;
 sm_depth = 0.25;
+sm_far = 0;
 sm_width = 0.10;
 sm_ext = 0.42;
 sm_room = 0.30;
@@ -936,6 +962,7 @@ meter_er = 0;
 last_itd_ms = 0;
 last_air_fc = 18000;
 last_dist_m = 0.3;
+last_far01 = 0;
 last_ext_db = 0;
 last_rear = 0;
 last_focus = 1;
@@ -1271,35 +1298,38 @@ tgt_az = cue_ang;
 last_cue_az = cue_ang;
 
 // Distance mapping: local UI stays high-resolution; Manager-linked topology can extend effective distance beyond the local 0..1 range.
+// V6.13 separates perceptual meters from normalized DSP distance. The room, width and nearfield laws stay 0..1;
+// far-field cues use a log-distance weight so 10 m reads distant and 80+ m stays clear instead of just wet.
 tgt_dist_calc = tgt_dist_n;
 tgt_dist_calc < 0 ? tgt_dist_calc = 0;
 tgt_dist_calc > 4 ? tgt_dist_calc = 4;
-base_dist_n = tgt_dist_calc;
-base_dist_n > 1 ? base_dist_n = 1;
-_depth2 = base_dist_n*base_dist_n;
-_depth3 = _depth2*base_dist_n;
 tgt_depth = tgt_dist_calc;
-dist_m = 0.18 + 8.82*(0.72*_depth2 + 0.28*_depth3);
-tgt_dist_calc > 1 ? (
-  ext_dist = tgt_dist_calc - 1;
-  dist_m += 8.0*ext_dist + 18.0*ext_dist*ext_dist;
-);
+tgt_depth > 1 ? tgt_depth = 1;
+_depth2 = tgt_depth*tgt_depth;
+_depth3 = _depth2*tgt_depth;
+dist_m = p3d_distance_m_from_n(tgt_dist_calc);
 last_dist_m = dist_m;
+tgt_far01 = p3d_far01_from_m(dist_m);
+last_far01 = tgt_far01;
 
-// Direct gain vs distance/occlusion
-_direct_g = 1 / (1 + 0.26*dist_m);
+// Direct gain vs distance/occlusion. Allow real far-field attenuation below the old -18 dB floor.
+_direct_g = 1 / (1 + 0.18*dist_m + 0.0035*dist_m*dist_m);
 _direct_g *= 1 - 0.28*tgt_occ;
-_direct_g < 0.11 ? _direct_g = 0.11;
+_direct_floor = 0.014 + 0.096*(1 - tgt_far01)*(1 - tgt_far01);
+_direct_g < _direct_floor ? _direct_g = _direct_floor;
 tgt_direct_g = _direct_g;
 
-// Room gain vs distance + occlusion
-_er_g = tgt_room * (0.035 + 0.16*tgt_depth + 0.11*_depth2);
-_er_g *= 1 + 0.85*tgt_occ;
+// Room gain vs distance + occlusion. Far distance is carried by level/spectrum/detail, not by runaway wetness.
+_er_far_trim = 1 - 0.58*tgt_far01;
+_er_far_trim < 0.38 ? _er_far_trim = 0.38;
+_er_g = tgt_room * (0.035 + 0.14*tgt_depth + 0.06*_depth2);
+_er_g *= _er_far_trim;
+_er_g *= 1 + 0.60*tgt_occ;
 tgt_er_g = _er_g;
 
-// Air absorption cutoff (distance + occlusion)
-air_fc = 19000 / (1 + 0.20*dist_m + 1.7*tgt_occ);
-air_fc < 1700 ? air_fc = 1700;
+// Air absorption cutoff: log-distance driven, so 10 m is clear-but-far and 80 m is darkened without turning into mud.
+air_fc = 19000 * (1 - 0.68*tgt_far01) / (1 + 1.25*tgt_occ);
+air_fc < 2800 ? air_fc = 2800;
 air_fc > 19000 ? air_fc = 19000;
 last_air_fc = air_fc;
 tgt_air_a = exp(-2*$pi*air_fc/srate);
@@ -1338,7 +1368,7 @@ len_bl = sqrt(((-2 - src_nx)*hw)*((-2 - src_nx)*hw) + (((-2 - src_ny)*hd)*((-2 -
 len_br = sqrt((((2 - src_nx)*hw))*(((2 - src_nx)*hw)) + (((-2 - src_ny)*hd)*((-2 - src_ny)*hd)));
 
 ms_scale = 1000/343;
-base_ms = 0.8 + 1.5*tgt_depth + 0.6*tgt_room;
+base_ms = 0.8 + 1.4*tgt_depth + 1.4*tgt_far01 + 0.6*tgt_room;
 
 d1 = base_ms + max(1.0, (len_l  - direct_geom) * ms_scale);
 d2 = base_ms + max(1.0, (len_r  - direct_geom) * ms_scale);
@@ -1358,8 +1388,8 @@ tgt_er6_d = d6 * srate * 0.001;
 tgt_er7_d = d7 * srate * 0.001;
 tgt_er8_d = d8 * srate * 0.001;
 
-// Reflection LPFs get darker with distance + occlusion + rear bias
-hf_scale = 1 / (1 + 0.14*dist_m + 1.1*tgt_occ);
+// Reflection LPFs get darker with perceived distance + occlusion, but not linearly with meters.
+hf_scale = (1 - 0.55*tgt_far01) / (1 + 1.1*tgt_occ);
 
 c1 = 11800*hf_scale; c2 = 11800*hf_scale; c3 = 10200*hf_scale; c4 = 7200*hf_scale;
 c5 = 7600*hf_scale;  c6 = 7600*hf_scale;  c7 = 5200*hf_scale; c8 = 5200*hf_scale;
@@ -1403,7 +1433,9 @@ last_shadow = az_abs * focus;
 // side  = stronger lateral lock
 // back  = darker / more notch / wider reflections
 zone_notch = 0.70 + 0.55*side + 0.85*rear;
-notch_db = -6.8 * tgt_ext * (0.18 + 0.82*az_abs) * zone_notch * focus;
+dist_focus = 1 - 0.34*tgt_far01;
+dist_focus < 0.58 ? dist_focus = 0.58;
+notch_db = -6.8 * tgt_ext * (0.18 + 0.82*az_abs) * zone_notch * focus * dist_focus;
 last_ext_db = notch_db;
 
 Q = 3.0 + 2.6*tgt_ext;
@@ -1470,6 +1502,7 @@ mono_in = (spl0 + spl1) * 0.5;
 // --- smooth user params ---
 sm_az     += (tgt_az     - sm_az)     * smooth_k;
 sm_depth  += (tgt_depth  - sm_depth)  * smooth_k;
+sm_far    += (tgt_far01  - sm_far)    * smooth_k;
 sm_width  += (tgt_width  - sm_width)  * smooth_k;
 sm_ext    += (tgt_ext    - sm_ext)    * smooth_k;
 sm_room   += (tgt_room   - sm_room)   * smooth_k;
@@ -1558,7 +1591,8 @@ az_abs = abs(az_sin);
 az_sign = az_eff >= 0 ? 1 : -1;
 
 focus = 1 - 0.74*sm_width;
-focus < 0.18 ? focus = 0.18;
+focus *= 1 - 0.20*sm_far;
+focus < 0.14 ? focus = 0.14;
 
 itd_ms = 0.68 * az_sin * focus;
 last_itd_ms = itd_ms;
@@ -1657,8 +1691,8 @@ az_eff < 0 ? (
 );
 
 // Width = blur toward center, more at distance
-center_blend = sm_width * (0.22 + 0.10*sm_depth + 0.10*rear);
-center_blend > 0.45 ? center_blend = 0.45;
+center_blend = sm_width * (0.22 + 0.10*sm_depth + 0.10*rear) + 0.035*sm_far*(1 + 0.35*rear);
+center_blend > 0.48 ? center_blend = 0.48;
 dir_l = dir_l*(1-center_blend) + direct_feed*center_blend;
 dir_r = dir_r*(1-center_blend) + direct_feed*center_blend;
 
@@ -1804,7 +1838,7 @@ er_r = er_ap_y;
 // Distance / occlusion push more energy into the room.
 // V6.2.2 moderates the occlusion room boost so the opposite ear does not
 // read reflections as a second blocker position.
-er_push = 0.70 + 0.72*sm_depth + 0.38*sm_occ + 0.12*side + 0.18*rear;
+er_push = 0.70 + 0.45*sm_depth + 0.10*sm_far + 0.30*sm_occ + 0.12*side + 0.18*rear;
 er_l *= sm_er_g * er_push;
 er_r *= sm_er_g * er_push;
 
@@ -2702,7 +2736,7 @@ fs1 < 12 ? fs1 = 12; fs2 < 10 ? fs2 = 10; fs3 < 9 ? fs3 = 9; fs4 < 8 ? fs4 = 8;
 // title
 gfx_setfont(1,"Arial",fs1,'b');
 gfx_set(txt_r,txt_g,txt_b,1);
-gfx_x = pad; gfx_y = pad*0.45; gfx_printf("Hyperreal 3D Panner V6.12.0");
+gfx_x = pad; gfx_y = pad*0.45; gfx_printf("Hyperreal 3D Panner V6.13.0");
 
 gfx_setfont(2,"Arial",fs2);
 gfx_set(mut_r,mut_g,mut_b,1);
@@ -3458,7 +3492,7 @@ ui_drawer_open ? (
     gfx_x = tip_tx; gfx_y = tip_l2; gfx_printf("+ = front, 0 = side, - = rear.");
     gfx_x = tip_tx; gfx_y = tip_l3; gfx_printf("Canvas Y also edits this.");
   ) : tip_id == 103 ? (
-    gfx_x = tip_tx; gfx_y = tip_l1; gfx_printf("Near/far range from listener: %.2f m", last_dist_m);
+    gfx_x = tip_tx; gfx_y = tip_l1; gfx_printf("Perceptual range: %.2f m | far %.0f%%", last_dist_m, last_far01*100);
     gfx_x = tip_tx; gfx_y = tip_l2; gfx_printf("Grey rings/dashes show distance only.");
     gfx_x = tip_tx; gfx_y = tip_l3; gfx_printf("Does not mean source Size.");
   ) : tip_id == 104 ? (
