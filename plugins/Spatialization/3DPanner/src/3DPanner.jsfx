@@ -1,4 +1,4 @@
-desc:Hyperreal 3D Panner V6.13.0 (Psychoacoustic Distance)
+desc:Hyperreal 3D Panner V6.14.0 (Elevation Feel)
 
 // #HELP: Headphone-focused 3D panner using softened perceptual placement, microdelay, head shadow, pinna cues, distance loss, occlusion, and room cues.
 // #HELP: Drag the orange source in the stage canvas. X = Lateral, Y = Front/Rear. Mouse wheel changes Distance.
@@ -10,6 +10,7 @@ desc:Hyperreal 3D Panner V6.13.0 (Psychoacoustic Distance)
 // #HELP: Hover any canvas cue, snap chip, Automation Safe button, or quick-control lane for inline guidance. Tooltips use exact hit zones and dock away from controls.
 // #HELP: Manager Link is opt-in. New instances start in Standalone mode and only follow a Manager after switching Mode to Manager.
 // #HELP: V6.13.0 overhauls long-distance psychoacoustics: extended manager distances stay far/clear instead of just becoming reverby.
+// #HELP: V6.14.0 adds Elevation: a non-HRTF height-feel macro for lifted/grounded perception, not exact vertical localization.
 // #HELP: V6.2.2 stabilizes Occlusion by applying blocked-source coloration after localization, preventing opposite-ear flicker.
 // #TOOLTIP: UI-only perceptual object panner. Main controls stay standalone-clean; Manager mode is explicit and opt-in.
 
@@ -72,6 +73,8 @@ slider18:90<5,250,1>-Motion Smooth (ms)
 slider19:0.55<0,1,0.001>-Room Size
 // #TOOLTIP: Internal cached manager slot. Panners route by Manager Name/IID, not this number.
 slider20:1<1,64,1>-Internal Manager Slot
+// #TOOLTIP: Height-feel macro. Non-HRTF psychoacoustic illusion: lifted/grounded impression, not reliable exact overhead/below localization.
+slider21:0<-1,1,0.001>-Elevation
 
 // V6.13.0 Manager model:
 //   Sliders 6/8 store the object's fixed world placement.
@@ -83,6 +86,7 @@ slider20:1<1,64,1>-Internal Manager Slot
 //   Distance                  = near/far physical distance.
 //   Spatial Throw             = strength of the directional cue stack.
 //   Push Out                  = outside-head realism / pinna-room emphasis.
+//   Elevation                 = non-HRTF lifted/grounded height feel.
 //   Cue Curve                 = how much mid-angle positions are softened.
 
 @init
@@ -564,6 +568,8 @@ function p3d_publish_slot() local(sb) (
   gmem[sb + P3D_SLOT_PUSH] = slider11;
   gmem[sb + P3D_SLOT_ROOM] = slider12;
   gmem[sb + P3D_SLOT_OCC] = slider13;
+  gmem[sb + P3D_SLOT_ELEVATION] = slider21;
+  gmem[sb + P3D_SLOT_EFF_ELEVATION] = last_effective_elevation;
   gmem[sb + P3D_SLOT_MANAGER_AMT] = p3d_manager_amt;
   // Keep the registry slot active so the Manager can list this panner even
   // while it is standalone. P3D_SLOT_LINK is the hard opt-in gate for camera control.
@@ -613,6 +619,7 @@ function p3d_service_registry() local(mb wr depth_delta side_delta topology dist
     p3d_cached_manager_enabled = 0;
     p3d_cached_camera_rot = 0;
     p3d_cached_distance_scale = 1;
+    p3d_cached_elevation = 0;
   );
   p3d_mgr_slot >= 0 ? (
     mb = P3D_MGR_BASE + p3d_mgr_slot * P3D_MGR_STRIDE;
@@ -628,6 +635,7 @@ function p3d_service_registry() local(mb wr depth_delta side_delta topology dist
       p3d_cached_distance_scale = gmem[mb + P3D_MGR_DIST_SCALE];
       p3d_cached_distance_scale <= 0 ? p3d_cached_distance_scale = 1;
       p3d_cached_distance_scale = p3d_clamp(p3d_cached_distance_scale, 0.25, 16.0);
+      p3d_cached_elevation = p3d_clamp(gmem[mb + P3D_MGR_ELEVATION], -1, 1);
       p3d_mgr_hold = P3D_MANAGER_HOLD_BLOCKS;
     ) : (
       p3d_mgr_hold > 0 ? p3d_mgr_hold -= 1;
@@ -642,6 +650,7 @@ function p3d_service_registry() local(mb wr depth_delta side_delta topology dist
   p3d_link_active = (p3d_link_enabled && p3d_manager_alive && p3d_manager_enabled && (p3d_manager_amt > 0.0001)) ? 1 : 0;
   p3d_camera_rot = p3d_cached_camera_rot;
   p3d_distance_scale = p3d_cached_distance_scale;
+p3d_manager_elevation = p3d_cached_elevation;
 
   p3d_world_lat = p3d_clamp(slider6, -1, 1);
   p3d_world_fb = p3d_clamp(slider8, -1, 1);
@@ -677,6 +686,8 @@ function p3d_service_registry() local(mb wr depth_delta side_delta topology dist
   last_effective_az = p3d_effective_ang;
   last_effective_lat = p3d_effective_lat;
   last_effective_fb = p3d_effective_fb;
+  last_effective_elevation = p3d_clamp(slider21 + (p3d_link_active ? p3d_manager_elevation*p3d_manager_amt : 0), -1, 1);
+  last_elevation = last_effective_elevation;
   last_camera_rot = p3d_camera_rot;
 
   base_n = last_effective_dist_n;
@@ -695,7 +706,7 @@ function p3d_service_registry() local(mb wr depth_delta side_delta topology dist
 
 // --- 3DPannerManager shared bus protocol ---
 P3D_MAGIC = 30260611;
-P3D_VERSION = 10;
+P3D_VERSION = 11;
 P3D_MAX_OBJECTS = 128;
 P3D_BUS_MAGIC = 0;
 P3D_BUS_VERSION = 1;
@@ -710,6 +721,7 @@ P3D_BUS_SMOOTH_MS = 9;
 P3D_BUS_COORD_MODE = 10;
 P3D_BUS_LINKED_COUNT = 11;
 P3D_BUS_MANAGER_SEQ = 12;
+P3D_BUS_ELEVATION = 13;
 P3D_OBJ_BASE = 64;
 P3D_SLOT_STRIDE = 64;
 P3D_SLOT_IID = 0;
@@ -730,6 +742,8 @@ P3D_SLOT_PUSH = 14;
 P3D_SLOT_ROOM = 15;
 P3D_SLOT_OCC = 16;
 P3D_SLOT_MANAGER_AMT = 17;
+P3D_SLOT_ELEVATION = 48;
+P3D_SLOT_EFF_ELEVATION = 49;
 P3D_SLOT_ACTIVE = 18;
 P3D_STALE_TICKS = 240;
 P3D_MANAGER_HOLD_BLOCKS = 90;
@@ -756,6 +770,7 @@ P3D_MGR_BUS_HASH = 9;
 P3D_MGR_CHANNEL = 10;
 P3D_MGR_SCENE_NAME_LEN_FIELD = 11;
 P3D_MGR_SCENE_CHAR_BASE = 12;
+P3D_MGR_ELEVATION = 48;
 P3D_MAX_SCENES = 32;
 P3D_SCENE_NAME_LEN = 36;
 P3D_SCENE_BASE = P3D_MGR_BASE + P3D_MAX_MANAGER_SLOTS * P3D_MGR_STRIDE;
@@ -805,6 +820,7 @@ p3d_cached_manager_enabled = 0;
 p3d_cached_manager_hb = -1;
 p3d_cached_camera_rot = 0;
 p3d_cached_distance_scale = 1;
+p3d_cached_elevation = 0;
 p3d_cached_rot_scale = 1;
 p3d_target_mgr_iid = 0;
 p3d_ui_scene_base = 65536;
@@ -873,6 +889,7 @@ sm_far = 0;
 sm_width = 0.10;
 sm_ext = 0.42;
 sm_room = 0.30;
+sm_elev = 0;
 sm_rsize = 0.55;
 sm_occ = 0;
 sm_motion = 0.04;
@@ -952,6 +969,16 @@ rear_t_a = rear_a;
 rear_mix = 0;
 rear_t_mix = 0;
 
+// Elevation feel filter states
+elev_body_l = 0;
+elev_body_r = 0;
+elev_air_lp_l = 0;
+elev_air_lp_r = 0;
+elev_er_lp1 = 0;
+elev_er_lp2 = 0;
+elev_body_a = exp(-2*$pi*420/srate);
+elev_air_a = exp(-2*$pi*6200/srate);
+
 // Motion LFO
 ph1 = 0;
 ph2 = 0;
@@ -963,6 +990,8 @@ last_itd_ms = 0;
 last_air_fc = 18000;
 last_dist_m = 0.3;
 last_far01 = 0;
+last_elevation = 0;
+last_effective_elevation = 0;
 last_ext_db = 0;
 last_rear = 0;
 last_focus = 1;
@@ -1010,7 +1039,7 @@ strcpy(#p3d_edit_name, #object_name);
 slider_show(1,1); slider_show(2,1); slider_show(3,0); slider_show(4,1); slider_show(5,0);
 slider_show(6,0); slider_show(7,0); slider_show(8,0); slider_show(9,0); slider_show(10,0);
 slider_show(11,0); slider_show(12,0); slider_show(13,0); slider_show(14,0); slider_show(15,0);
-slider_show(16,0); slider_show(17,0); slider_show(18,0); slider_show(19,0); slider_show(20,0);
+slider_show(16,0); slider_show(17,0); slider_show(18,0); slider_show(19,0); slider_show(20,0); slider_show(21,0);
 
 
 @slider
@@ -1098,6 +1127,7 @@ p3d_link_enabled ? (
   p3d_cached_manager_enabled = 0;
   p3d_cached_camera_rot = 0;
   p3d_cached_distance_scale = 1;
+  p3d_cached_elevation = 0;
 );
 p3d_mgr_slot >= 0 ? (
   p3d_mgr_base = P3D_MGR_BASE + p3d_mgr_slot * P3D_MGR_STRIDE;
@@ -1113,6 +1143,7 @@ p3d_mgr_slot >= 0 ? (
     p3d_cached_distance_scale = gmem[p3d_mgr_base + P3D_MGR_DIST_SCALE];
     p3d_cached_distance_scale <= 0 ? p3d_cached_distance_scale = 1;
     p3d_cached_distance_scale = p3d_clamp(p3d_cached_distance_scale, 0.25, 16.0);
+    p3d_cached_elevation = p3d_clamp(gmem[p3d_mgr_base + P3D_MGR_ELEVATION], -1, 1);
     p3d_mgr_hold = P3D_MANAGER_HOLD_BLOCKS;
   ) : (
     p3d_mgr_hold > 0 ? p3d_mgr_hold -= 1;
@@ -1128,6 +1159,7 @@ p3d_link_active = (p3d_link_enabled && p3d_manager_alive && p3d_manager_enabled 
 
 p3d_camera_rot = p3d_cached_camera_rot;
 p3d_distance_scale = p3d_cached_distance_scale;
+p3d_manager_elevation = p3d_cached_elevation;
 
 while (msg_recv(#p3d_registry_bus, p3d_msg_src, p3d_msg_tag, p3d_msg_a, p3d_msg_b, p3d_msg_c, p3d_msg_d)) (
   (p3d_msg_tag == P3D_OP_MANAGER_STATE) && (p3d_msg_src != p3d_iid) ? (
@@ -1164,6 +1196,10 @@ tgt_ext > 1 ? tgt_ext = 1;
 tgt_room = slider12;
 tgt_room < 0 ? tgt_room = 0;
 tgt_room > 1 ? tgt_room = 1;
+
+tgt_elev = slider21;
+tgt_elev < -1 ? tgt_elev = -1;
+tgt_elev > 1 ? tgt_elev = 1;
 
 tgt_occ = slider13;
 tgt_occ < 0 ? tgt_occ = 0;
@@ -1230,6 +1266,13 @@ p3d_link_active ? (
   p3d_effective_lat = tgt_lat;
   p3d_effective_fb = tgt_fb;
 );
+
+p3d_link_active ? (
+  tgt_elev = tgt_elev + p3d_manager_elevation * p3d_manager_amt;
+  tgt_elev < -1 ? tgt_elev = -1;
+  tgt_elev > 1 ? tgt_elev = 1;
+);
+last_effective_elevation = tgt_elev;
 
 last_manager_link = p3d_link_enabled;
 last_manager_active = p3d_link_active;
@@ -1440,8 +1483,8 @@ last_ext_db = notch_db;
 
 Q = 3.0 + 2.6*tgt_ext;
 
-base_fc = 7150 + 220*front - 650*side - 1250*rear;
-span_fc = (1700 + 450*side + 250*rear) * focus;
+base_fc = 7150 + 220*front - 650*side - 1250*rear + 620*elev_up - 380*elev_down;
+span_fc = (1700 + 450*side + 250*rear + 260*elev_abs) * focus;
 
 fc_l = base_fc - span_fc*az_s;
 fc_r = base_fc + span_fc*az_s;
@@ -1506,6 +1549,7 @@ sm_far    += (tgt_far01  - sm_far)    * smooth_k;
 sm_width  += (tgt_width  - sm_width)  * smooth_k;
 sm_ext    += (tgt_ext    - sm_ext)    * smooth_k;
 sm_room   += (tgt_room   - sm_room)   * smooth_k;
+sm_elev   += (tgt_elev   - sm_elev)   * smooth_k;
 sm_rsize  += (tgt_rsize  - sm_rsize)  * smooth_k;
 sm_occ    += (tgt_occ    - sm_occ)    * smooth_k;
 sm_motion += (tgt_motion - sm_motion) * smooth_k;
@@ -1736,6 +1780,32 @@ rear_scale = 1 - 0.05*rear;
 dir_l *= rear_scale + 0.05*front;
 dir_r *= rear_scale + 0.05*front;
 
+// --- Elevation feel: non-HRTF lifted/grounded macro ---
+// This is an illusion cue, not exact vertical localization. It gently biases
+// spectral mass/air and becomes more convincing as Push Out rises.
+elev_abs_s = abs(sm_elev);
+elev_cue_s = elev_abs_s^1.35;
+elev_up_s = max(0, sm_elev);
+elev_down_s = max(0, -sm_elev);
+elev_strength_s = elev_cue_s * (0.30 + 0.70*sm_ext);
+
+// Keep the filter states warm even at neutral elevation so enabling it does not click/jump.
+elev_body_l = (1-elev_body_a)*dir_l + elev_body_a*elev_body_l;
+elev_air_lp_l = (1-elev_air_a)*dir_l + elev_air_a*elev_air_lp_l;
+elev_hi_l = dir_l - elev_air_lp_l;
+
+elev_body_r = (1-elev_body_a)*dir_r + elev_body_a*elev_body_r;
+elev_air_lp_r = (1-elev_air_a)*dir_r + elev_air_a*elev_air_lp_r;
+elev_hi_r = dir_r - elev_air_lp_r;
+
+(elev_strength_s > 0.00001) ? (
+  elev_body_g = 1 - 0.08*elev_up_s*elev_strength_s + 0.10*elev_down_s*elev_strength_s;
+  elev_air_g  = 1 + 0.14*elev_up_s*elev_strength_s - 0.18*elev_down_s*elev_strength_s;
+
+  dir_l = dir_l + elev_body_l*(elev_body_g-1) + elev_hi_l*(elev_air_g-1);
+  dir_r = dir_r + elev_body_r*(elev_body_g-1) + elev_hi_r*(elev_air_g-1);
+);
+
 // apply distance gain after spectral cues
 dir_l *= sm_direct_g;
 dir_r *= sm_direct_g;
@@ -1820,6 +1890,33 @@ tap = erbuf[idx0]*(1-rdf) + erbuf[idx1]*rdf;
 er_lp8 = (1-er_a8)*tap + er_a8*er_lp8;
 er_l += er_lp8 * 0.13 * 0.82 * rear_wide;
 er_r += er_lp8 * 0.13 * 1.14 * rear_wide;
+
+// --- Elevation vertical early-reflection bias ---
+// Uses existing ER buffer; upward favors a ceiling-like tap, downward favors a floor-like tap.
+elev_abs_s = abs(sm_elev);
+elev_cue_s = elev_abs_s^1.35;
+elev_er_amt = elev_cue_s * sm_room * (0.25 + 0.75*sm_ext);
+(elev_er_amt > 0.00001) ? (
+  ceil_ms = 2.6 + 3.8*sm_rsize + 2.4*max(0, sm_elev);
+  floor_ms = 3.4 + 4.4*sm_rsize + 2.8*max(0, -sm_elev);
+
+  rd = ceil_ms * srate * 0.001;
+  rdi = floor(rd); rdf = rd - rdi;
+  idx0 = (er_wpos - rdi) & er_mask; idx1 = (er_wpos - rdi - 1) & er_mask;
+  tap = erbuf[idx0]*(1-rdf) + erbuf[idx1]*rdf;
+  elev_er_lp1 = (1-er_a3)*tap + er_a3*elev_er_lp1;
+  ceil_g = elev_er_amt * (0.055 + 0.145*max(0, sm_elev));
+
+  rd = floor_ms * srate * 0.001;
+  rdi = floor(rd); rdf = rd - rdi;
+  idx0 = (er_wpos - rdi) & er_mask; idx1 = (er_wpos - rdi - 1) & er_mask;
+  tap = erbuf[idx0]*(1-rdf) + erbuf[idx1]*rdf;
+  elev_er_lp2 = (1-er_a4)*tap + er_a4*elev_er_lp2;
+  floor_g = elev_er_amt * (0.050 + 0.140*max(0, -sm_elev));
+
+  er_l += elev_er_lp1*ceil_g + elev_er_lp2*floor_g*0.92;
+  er_r += elev_er_lp1*ceil_g + elev_er_lp2*floor_g*0.92;
+);
 
 // ER decorrelation
 apL = 0.53;
@@ -1935,6 +2032,7 @@ ui_throw = slider9;
 ui_size = slider10;
 ui_push = slider11;
 ui_room = slider12;
+ui_elev = ui_link_view ? last_effective_elevation : slider21;
 ui_occ = slider13;
 ui_motion = slider14;
 ui_trim = slider15;
@@ -2031,8 +2129,8 @@ valx = barx + barw + 8*ui_s;
 
 bars_top = c2y + 44*ui_s;
 bars_bottom = c2y + c2h - 10*ui_s;
-row_h = (bars_bottom - bars_top) / 10;
-row_h < 22*ui_s ? row_h = 22*ui_s;
+row_h = (bars_bottom - bars_top) / 11;
+row_h < 18.5*ui_s ? row_h = 18.5*ui_s;
 barh = row_h * 0.32;
 barh > 11*ui_s ? barh = 11*ui_s;
 barh < 7*ui_s ? barh = 7*ui_s;
@@ -2048,6 +2146,7 @@ b7y = bars_top + row_h*6.50 - barh*0.50;
 b8y = bars_top + row_h*7.50 - barh*0.50;
 b9y = bars_top + row_h*8.50 - barh*0.50;
 b10y = bars_top + row_h*9.50 - barh*0.50;
+b11y = bars_top + row_h*10.50 - barh*0.50;
 
 // --- mouse / hover ---
 mouse_l = mouse_cap & 1;
@@ -2071,6 +2170,7 @@ hover_bar = 0;
 (mouse_x >= barx && mouse_x <= barx+barw && mouse_y >= b8y && mouse_y <= b8y+barh) ? hover_bar = 8;
 (mouse_x >= barx && mouse_x <= barx+barw && mouse_y >= b9y && mouse_y <= b9y+barh) ? hover_bar = 9;
 (mouse_x >= barx && mouse_x <= barx+barw && mouse_y >= b10y && mouse_y <= b10y+barh) ? hover_bar = 10;
+(mouse_x >= barx && mouse_x <= barx+barw && mouse_y >= b11y && mouse_y <= b11y+barh) ? hover_bar = 11;
 
 // Tooltip lane targeting must match the actual slider hitbox exactly.
 // V6.2 used widened row hitboxes, which made help trigger above the visible bar
@@ -2233,6 +2333,14 @@ tip_hot ? (
   motion_hot_r = (4 + 28*ui_motion)*ui_s + 8*ui_s;
   motion_hot = inside_room && ui_motion > 0.04 && !near_src && src_d2 <= motion_hot_r*motion_hot_r;
 
+  elev_hot = 0;
+  elev_abs_ui = abs(ui_elev);
+  elev_abs_ui > 0.04 ? (
+    elev_stem = (12 + 46*elev_abs_ui)*ui_s;
+    elev_tip_y = ui_elev >= 0 ? sy - elev_stem : sy + elev_stem;
+    elev_hot = inside_room && abs(mouse_x - sx) <= 13*ui_s && mouse_y >= min(sy, elev_tip_y)-9*ui_s && mouse_y <= max(sy, elev_tip_y)+9*ui_s;
+  );
+
   occ_tip_x = cx + (sx-cx)*0.46;
   occ_tip_y = cy + (sy-cy)*0.46;
   occ_hot_r = 18*ui_s + 26*ui_s*ui_occ;
@@ -2255,6 +2363,7 @@ tip_hot ? (
   tip_id == 0 && shell_hot ? tip_id = 23;
   tip_id == 0 && size_hot ? tip_id = 26;
   tip_id == 0 && motion_hot ? tip_id = 28;
+  tip_id == 0 && elev_hot ? tip_id = 31;
   tip_id == 0 && range_hot ? tip_id = 27;
   tip_id == 0 && room_edge_hot ? tip_id = 22;
   tip_id == 0 && head_hot ? tip_id = 24;
@@ -2375,18 +2484,22 @@ mouse_wheel != 0 ? (
     slider11 < 0 ? slider11 = 0; slider11 > 1 ? slider11 = 1;
     sliderchange(-1.0);
   ) : hover_bar == 7 ? (
+    slider21 += wstep * 0.045 * wheel_scale;
+    slider21 < -1 ? slider21 = -1; slider21 > 1 ? slider21 = 1;
+    sliderchange(-1.0);
+  ) : hover_bar == 8 ? (
     slider12 += wstep * 0.035 * wheel_scale;
     slider12 < 0 ? slider12 = 0; slider12 > 1 ? slider12 = 1;
     sliderchange(-1.0);
-  ) : hover_bar == 8 ? (
+  ) : hover_bar == 9 ? (
     slider13 += wstep * 0.035 * wheel_scale;
     slider13 < 0 ? slider13 = 0; slider13 > 1 ? slider13 = 1;
     sliderchange(-1.0);
-  ) : hover_bar == 9 ? (
+  ) : hover_bar == 10 ? (
     slider14 += wstep * 0.030 * wheel_scale;
     slider14 < 0 ? slider14 = 0; slider14 > 1 ? slider14 = 1;
     sliderchange(-1.0);
-  ) : hover_bar == 10 ? (
+  ) : hover_bar == 11 ? (
     slider15 += wstep * 0.4 * wheel_scale;
     slider15 < -18 ? slider15 = -18; slider15 > 12 ? slider15 = 12;
     sliderchange(-1.0);
@@ -2419,10 +2532,11 @@ mouse_wheel != 0 ? (
   hover_bar == 4 ? (slider9 = 0.58; sliderchange(-1.0);) :
   hover_bar == 5 ? (slider10 = 0.10; sliderchange(-1.0);) :
   hover_bar == 6 ? (slider11 = 0.42; sliderchange(-1.0);) :
-  hover_bar == 7 ? (slider12 = 0.30; sliderchange(-1.0);) :
-  hover_bar == 8 ? (slider13 = 0.00; sliderchange(-1.0);) :
-  hover_bar == 9 ? (slider14 = 0.04; sliderchange(-1.0);) :
-  hover_bar == 10 ? (slider15 = 0.0; sliderchange(-1.0);) :
+  hover_bar == 7 ? (slider21 = 0.00; sliderchange(-1.0);) :
+  hover_bar == 8 ? (slider12 = 0.30; sliderchange(-1.0);) :
+  hover_bar == 9 ? (slider13 = 0.00; sliderchange(-1.0);) :
+  hover_bar == 10 ? (slider14 = 0.04; sliderchange(-1.0);) :
+  hover_bar == 11 ? (slider15 = 0.0; sliderchange(-1.0);) :
   hover_adv == 1 ? (slider17 = 2.0; sliderchange(-1.0);) :
   hover_adv == 2 ? (slider18 = 90; sliderchange(-1.0);) :
   hover_adv == 3 ? (slider19 = 0.55; sliderchange(-1.0););
@@ -2446,6 +2560,7 @@ mouse_wheel != 0 ? (
     p3d_cached_manager_enabled = 0;
     p3d_cached_camera_rot = 0;
     p3d_cached_distance_scale = 1;
+    p3d_cached_elevation = 0;
     p3d_target_mgr_iid = 0;
     p3d_manager_iid = 0;
     p3d_mgr_slot = -1;
@@ -2502,6 +2617,7 @@ mouse_wheel != 0 ? (
     p3d_cached_manager_enabled = 0;
     p3d_cached_camera_rot = 0;
     p3d_cached_distance_scale = 1;
+    p3d_cached_elevation = 0;
     p3d_rebind_pending = 1;
     p3d_allow_msg = 0;
     p3d_service_registry();
@@ -2543,9 +2659,10 @@ mouse_wheel != 0 ? (
       hover_bar == 4 ? slider9 :
       hover_bar == 5 ? slider10 :
       hover_bar == 6 ? slider11 :
-      hover_bar == 7 ? slider12 :
-      hover_bar == 8 ? slider13 :
-      hover_bar == 9 ? slider14 : slider15;
+      hover_bar == 7 ? slider21 :
+      hover_bar == 8 ? slider12 :
+      hover_bar == 9 ? slider13 :
+      hover_bar == 10 ? slider14 : slider15;
   );
 );
 
@@ -2588,9 +2705,10 @@ mouse_wheel != 0 ? (
   sid == 4 ? (mn=0; mx=1;) :
   sid == 5 ? (mn=0; mx=1;) :
   sid == 6 ? (mn=0; mx=1;) :
-  sid == 7 ? (mn=0; mx=1;) :
+  sid == 7 ? (mn=-1; mx=1;) :
   sid == 8 ? (mn=0; mx=1;) :
   sid == 9 ? (mn=0; mx=1;) :
+  sid == 10 ? (mn=0; mx=1;) :
              (mn=-18; mx=12;);
 
   mouse_shift ? (
@@ -2610,9 +2728,10 @@ mouse_wheel != 0 ? (
   sid == 4 ? slider9 = v :
   sid == 5 ? slider10 = v :
   sid == 6 ? slider11 = v :
-  sid == 7 ? slider12 = v :
-  sid == 8 ? slider13 = v :
-  sid == 9 ? slider14 = v : slider15 = v;
+  sid == 7 ? slider21 = v :
+  sid == 8 ? slider12 = v :
+  sid == 9 ? slider13 = v :
+  sid == 10 ? slider14 = v : slider15 = v;
 
   sliderchange(-1.0);
 );
@@ -2658,6 +2777,7 @@ ui_throw = slider9;
 ui_size = slider10;
 ui_push = slider11;
 ui_room = slider12;
+ui_elev = ui_link_view ? last_effective_elevation : slider21;
 ui_occ = slider13;
 ui_motion = slider14;
 ui_trim = slider15;
@@ -2736,7 +2856,7 @@ fs1 < 12 ? fs1 = 12; fs2 < 10 ? fs2 = 10; fs3 < 9 ? fs3 = 9; fs4 < 8 ? fs4 = 8;
 // title
 gfx_setfont(1,"Arial",fs1,'b');
 gfx_set(txt_r,txt_g,txt_b,1);
-gfx_x = pad; gfx_y = pad*0.45; gfx_printf("Hyperreal 3D Panner V6.13.0");
+gfx_x = pad; gfx_y = pad*0.45; gfx_printf("Hyperreal 3D Panner V6.14.0");
 
 gfx_setfont(2,"Arial",fs2);
 gfx_set(mut_r,mut_g,mut_b,1);
@@ -2917,6 +3037,24 @@ head_r = 17*ui_s;
   gfx_line(cx+21*ui_s, cy, sx, sy);
 );
 
+// --- visual cue: Elevation = vertical height-feel stem/shadow ---
+elev_abs_ui = abs(ui_elev);
+(elev_abs_ui > 0.002) ? (
+  elev_stem = (12 + 46*elev_abs_ui)*ui_s;
+  elev_tip_y = ui_elev >= 0 ? sy - elev_stem : sy + elev_stem;
+  // Upward = airy cyan/violet lift; downward = grounded violet shadow. This is visualized as height feel, not literal HRTF altitude.
+  ui_elev >= 0 ? gfx_set(0.55,0.76,1.0,0.16 + 0.30*elev_abs_ui) : gfx_set(0.72,0.45,0.95,0.16 + 0.30*elev_abs_ui);
+  gfx_line(sx, sy, sx, elev_tip_y);
+  gfx_circle(sx, elev_tip_y, (4 + 10*elev_abs_ui)*ui_s, 0, 1);
+  ui_elev < 0 ? (
+    gfx_set(0.50,0.30,0.72,0.10 + 0.22*elev_abs_ui);
+    gfx_circle(sx, sy + elev_stem*0.72, (10 + 24*elev_abs_ui)*ui_s, 0, 1);
+  ) : (
+    gfx_set(0.58,0.80,1.0,0.08 + 0.18*elev_abs_ui);
+    gfx_circle(sx, sy - elev_stem*0.72, (8 + 22*elev_abs_ui)*ui_s, 0, 1);
+  );
+);
+
 // cue ghost = effective DSP position after Spatial Throw/Cue Curve compression
 ghost_r = dot_r*0.72;
 gfx_set(src_cr,src_cg,src_cb,0.12 + 0.20*ui_throw);
@@ -3002,7 +3140,7 @@ gfx_x = canvas_x + 14*ui_s; gfx_y = canvas_y + 12*ui_s + fs4 + 4*ui_s; gfx_print
 gfx_set(0.78,0.82,0.92,0.82);
 gfx_x = canvas_x + 14*ui_s; gfx_y = canvas_y + 12*ui_s + (fs4 + 4*ui_s)*2; gfx_printf("rings = Distance | shell = Push Out");
 gfx_set(ok_r,ok_g,ok_b,0.82);
-gfx_x = canvas_x + 14*ui_s; gfx_y = canvas_y + 12*ui_s + (fs4 + 4*ui_s)*3; gfx_printf("green trail = Motion");
+gfx_x = canvas_x + 14*ui_s; gfx_y = canvas_y + 12*ui_s + (fs4 + 4*ui_s)*3; gfx_printf("green trail = Motion | stem = Elevation");
 
 // chips
 gfx_setfont(4,"Arial",fs4,'b');
@@ -3147,35 +3285,44 @@ gfx_set(0.95,0.66,0.24,1); gfx_rect(barx,b6y,barw*ui_push,barh);
 gfx_set(1,1,1, hover_bar==6 ? 0.95 : 0.70); gfx_circle(barx + barw*ui_push, b6y + barh*0.5, 4.0*ui_s, 1, 1);
 gfx_set(mut_r,mut_g,mut_b,1); gfx_x = valx; gfx_y = b6y-1*ui_s; gfx_printf("%.2f", ui_push);
 
-// 7 Room
-gfx_set(0.92,0.94,0.97,1); gfx_x = barx; gfx_y = b7y-label_lift; gfx_printf("Room");
+// 7 Elevation
+elev_n = (ui_elev + 1)*0.5;
+gfx_set(0.92,0.94,0.97,1); gfx_x = barx; gfx_y = b7y-label_lift; gfx_printf("Elevation");
 gfx_set(0.18,0.20,0.24,1); gfx_rect(barx,b7y,barw,barh); gfx_roundrect(barx,b7y,barw,barh,6*ui_s,1);
-gfx_set(bounce_r,bounce_g,bounce_b,1); gfx_rect(barx,b7y,barw*ui_room,barh);
-gfx_set(1,1,1, hover_bar==7 ? 0.95 : 0.70); gfx_circle(barx + barw*ui_room, b7y + barh*0.5, 4.0*ui_s, 1, 1);
-gfx_set(mut_r,mut_g,mut_b,1); gfx_x = valx; gfx_y = b7y-1*ui_s; gfx_printf("%.2f", ui_room);
+gfx_set(0.55,0.76,1.0,1); gfx_rect(barx,b7y,barw*elev_n,barh);
+gfx_set(0.08,0.08,0.10,0.65); gfx_line(barx+barw*0.5,b7y,barx+barw*0.5,b7y+barh);
+gfx_set(1,1,1, hover_bar==7 ? 0.95 : 0.70); gfx_circle(barx + barw*elev_n, b7y + barh*0.5, 4.0*ui_s, 1, 1);
+gfx_set(mut_r,mut_g,mut_b,1); gfx_x = valx; gfx_y = b7y-1*ui_s; gfx_printf("%+.2f", ui_elev);
 
-// 8 Occlusion
-gfx_set(0.92,0.94,0.97,1); gfx_x = barx; gfx_y = b8y-label_lift; gfx_printf("Occlusion");
+// 8 Room
+gfx_set(0.92,0.94,0.97,1); gfx_x = barx; gfx_y = b8y-label_lift; gfx_printf("Room");
 gfx_set(0.18,0.20,0.24,1); gfx_rect(barx,b8y,barw,barh); gfx_roundrect(barx,b8y,barw,barh,6*ui_s,1);
-gfx_set(occ_cr,occ_cg,occ_cb,1); gfx_rect(barx,b8y,barw*ui_occ,barh);
-gfx_set(1,1,1, hover_bar==8 ? 0.95 : 0.70); gfx_circle(barx + barw*ui_occ, b8y + barh*0.5, 4.0*ui_s, 1, 1);
-gfx_set(mut_r,mut_g,mut_b,1); gfx_x = valx; gfx_y = b8y-1*ui_s; gfx_printf("%.2f", ui_occ);
+gfx_set(bounce_r,bounce_g,bounce_b,1); gfx_rect(barx,b8y,barw*ui_room,barh);
+gfx_set(1,1,1, hover_bar==8 ? 0.95 : 0.70); gfx_circle(barx + barw*ui_room, b8y + barh*0.5, 4.0*ui_s, 1, 1);
+gfx_set(mut_r,mut_g,mut_b,1); gfx_x = valx; gfx_y = b8y-1*ui_s; gfx_printf("%.2f", ui_room);
 
-// 9 Motion
-gfx_set(0.92,0.94,0.97,1); gfx_x = barx; gfx_y = b9y-label_lift; gfx_printf("Motion");
+// 9 Occlusion
+gfx_set(0.92,0.94,0.97,1); gfx_x = barx; gfx_y = b9y-label_lift; gfx_printf("Occlusion");
 gfx_set(0.18,0.20,0.24,1); gfx_rect(barx,b9y,barw,barh); gfx_roundrect(barx,b9y,barw,barh,6*ui_s,1);
-gfx_set(ok_r,ok_g,ok_b,1); gfx_rect(barx,b9y,barw*ui_motion,barh);
-gfx_set(1,1,1, hover_bar==9 ? 0.95 : 0.70); gfx_circle(barx + barw*ui_motion, b9y + barh*0.5, 4.0*ui_s, 1, 1);
-gfx_set(mut_r,mut_g,mut_b,1); gfx_x = valx; gfx_y = b9y-1*ui_s; gfx_printf("%.2f", ui_motion);
+gfx_set(occ_cr,occ_cg,occ_cb,1); gfx_rect(barx,b9y,barw*ui_occ,barh);
+gfx_set(1,1,1, hover_bar==9 ? 0.95 : 0.70); gfx_circle(barx + barw*ui_occ, b9y + barh*0.5, 4.0*ui_s, 1, 1);
+gfx_set(mut_r,mut_g,mut_b,1); gfx_x = valx; gfx_y = b9y-1*ui_s; gfx_printf("%.2f", ui_occ);
 
-// 10 Output
-gfx_set(0.92,0.94,0.97,1); gfx_x = barx; gfx_y = b10y-label_lift; gfx_printf("Output");
+// 10 Motion
+gfx_set(0.92,0.94,0.97,1); gfx_x = barx; gfx_y = b10y-label_lift; gfx_printf("Motion");
 gfx_set(0.18,0.20,0.24,1); gfx_rect(barx,b10y,barw,barh); gfx_roundrect(barx,b10y,barw,barh,6*ui_s,1);
-gfx_set(0.85,0.88,0.93,1); gfx_rect(barx,b10y,barw*trim_n,barh);
+gfx_set(ok_r,ok_g,ok_b,1); gfx_rect(barx,b10y,barw*ui_motion,barh);
+gfx_set(1,1,1, hover_bar==10 ? 0.95 : 0.70); gfx_circle(barx + barw*ui_motion, b10y + barh*0.5, 4.0*ui_s, 1, 1);
+gfx_set(mut_r,mut_g,mut_b,1); gfx_x = valx; gfx_y = b10y-1*ui_s; gfx_printf("%.2f", ui_motion);
+
+// 11 Output
+gfx_set(0.92,0.94,0.97,1); gfx_x = barx; gfx_y = b11y-label_lift; gfx_printf("Output");
+gfx_set(0.18,0.20,0.24,1); gfx_rect(barx,b11y,barw,barh); gfx_roundrect(barx,b11y,barw,barh,6*ui_s,1);
+gfx_set(0.85,0.88,0.93,1); gfx_rect(barx,b11y,barw*trim_n,barh);
 zero_x = barx + barw*(18/30);
-gfx_set(0.10,0.10,0.12,0.85); gfx_line(zero_x, b10y, zero_x, b10y+barh);
-gfx_set(1,1,1, hover_bar==10 ? 0.95 : 0.70); gfx_circle(barx + barw*trim_n, b10y + barh*0.5, 4.0*ui_s, 1, 1);
-gfx_set(mut_r,mut_g,mut_b,1); gfx_x = valx; gfx_y = b10y-1*ui_s; gfx_printf("%.1fdB", ui_trim);
+gfx_set(0.10,0.10,0.12,0.85); gfx_line(zero_x, b11y, zero_x, b11y+barh);
+gfx_set(1,1,1, hover_bar==11 ? 0.95 : 0.70); gfx_circle(barx + barw*trim_n, b11y + barh*0.5, 4.0*ui_s, 1, 1);
+gfx_set(mut_r,mut_g,mut_b,1); gfx_x = valx; gfx_y = b11y-1*ui_s; gfx_printf("%.1fdB", ui_trim);
 
 // --- right card 3: UI-only advanced controls ---
 gfx_setfont(2,"Arial",fs2,'b');
@@ -3382,9 +3529,10 @@ ui_drawer_open ? (
   gfx_roundrect(tip_x, tip_y, tip_w, tip_h, 10*ui_s, 0);
 
   // Accent stripe by visual/control family.
-  tip_id == 22 || tip_id == 107 ? gfx_set(bounce_r,bounce_g,bounce_b,0.96) :
-  tip_id == 108 || tip_id == 29 ? gfx_set(occ_cr,occ_cg,occ_cb,0.96) :
-  tip_id == 109 || tip_id == 28 ? gfx_set(ok_r,ok_g,ok_b,0.96) :
+  tip_id == 22 || tip_id == 108 ? gfx_set(bounce_r,bounce_g,bounce_b,0.96) :
+  tip_id == 109 || tip_id == 29 ? gfx_set(occ_cr,occ_cg,occ_cb,0.96) :
+  tip_id == 110 || tip_id == 28 ? gfx_set(ok_r,ok_g,ok_b,0.96) :
+  tip_id == 107 || tip_id == 31 ? gfx_set(0.55,0.76,1.0,0.96) :
   tip_id == 103 || tip_id == 27 ? gfx_set(0.78,0.82,0.92,0.96) :
   tip_id == 106 || tip_id == 23 ? gfx_set(0.95,0.66,0.24,0.96) :
   gfx_set(src_cr,src_cg,src_cb,0.96);
@@ -3409,6 +3557,7 @@ ui_drawer_open ? (
   tip_id == 27 ? gfx_printf("Distance Rings") :
   tip_id == 28 ? gfx_printf("Motion Trail") :
   tip_id == 29 ? gfx_printf("Occlusion Wedge") :
+  tip_id == 31 ? gfx_printf("Elevation Stem") :
   tip_id == 30 ? gfx_printf("Automation Safe") :
   tip_id >= 41 && tip_id <= 48 ? gfx_printf("Snap Placement") :
   tip_id == 101 ? gfx_printf("Lateral") :
@@ -3417,10 +3566,11 @@ ui_drawer_open ? (
   tip_id == 104 ? gfx_printf("Spatial Throw") :
   tip_id == 105 ? gfx_printf("Size") :
   tip_id == 106 ? gfx_printf("Push Out") :
-  tip_id == 107 ? gfx_printf("Room") :
-  tip_id == 108 ? gfx_printf("Occlusion") :
-  tip_id == 109 ? gfx_printf("Motion") :
-  tip_id == 110 ? gfx_printf("Output Trim") :
+  tip_id == 107 ? gfx_printf("Elevation") :
+  tip_id == 108 ? gfx_printf("Room") :
+  tip_id == 109 ? gfx_printf("Occlusion") :
+  tip_id == 110 ? gfx_printf("Motion") :
+  tip_id == 111 ? gfx_printf("Output Trim") :
   tip_id == 201 ? gfx_printf("Cue Curve") :
   tip_id == 202 ? gfx_printf("Motion Smooth") :
   tip_id == 203 ? gfx_printf("Room Size") : gfx_printf("Help");
@@ -3468,6 +3618,10 @@ ui_drawer_open ? (
     gfx_x = tip_tx; gfx_y = tip_l1; gfx_printf("Occlusion means blocked/screened source.");
     gfx_x = tip_tx; gfx_y = tip_l2; gfx_printf("Purple wedge marks the blocker cue.");
     gfx_x = tip_tx; gfx_y = tip_l3; gfx_printf("Higher values darken the direct path.");
+  ) : tip_id == 31 ? (
+    gfx_x = tip_tx; gfx_y = tip_l1; gfx_printf("Elevation is non-HRTF height feel.");
+    gfx_x = tip_tx; gfx_y = tip_l2; gfx_printf("It suggests lifted/grounded perception.");
+    gfx_x = tip_tx; gfx_y = tip_l3; gfx_printf("Not exact overhead/below localization.");
   ) : tip_id == 30 ? (
     gfx_x = tip_tx; gfx_y = tip_l1; gfx_printf("Caps aggressive cue motion.");
     gfx_x = tip_tx; gfx_y = tip_l2; gfx_printf("Use for fast drawn automation.");
@@ -3508,18 +3662,22 @@ ui_drawer_open ? (
     gfx_x = tip_tx; gfx_y = tip_l2; gfx_printf("Shown as listener shell/separation rays.");
     gfx_x = tip_tx; gfx_y = tip_l3; gfx_printf("Former Externalize control.");
   ) : tip_id == 107 ? (
+    gfx_x = tip_tx; gfx_y = tip_l1; gfx_printf("Non-HRTF height-feel macro: %+.2f", ui_elev);
+    gfx_x = tip_tx; gfx_y = tip_l2; gfx_printf("Up = lifted/airy, down = grounded.");
+    gfx_x = tip_tx; gfx_y = tip_l3; gfx_printf("Illusion only: not exact vertical localization.");
+  ) : tip_id == 108 ? (
     gfx_x = tip_tx; gfx_y = tip_l1; gfx_printf("Early reflection and room cue amount.");
     gfx_x = tip_tx; gfx_y = tip_l2; gfx_printf("Cyan bounces/wall glow scale with Room.");
     gfx_x = tip_tx; gfx_y = tip_l3; gfx_printf("More Room = less surgical, more external.");
-  ) : tip_id == 108 ? (
+  ) : tip_id == 109 ? (
     gfx_x = tip_tx; gfx_y = tip_l1; gfx_printf("Blocked or screened source feel.");
     gfx_x = tip_tx; gfx_y = tip_l2; gfx_printf("Darkens/smears direct sound.");
     gfx_x = tip_tx; gfx_y = tip_l3; gfx_printf("Purple wedge shows blocker cue.");
-  ) : tip_id == 109 ? (
+  ) : tip_id == 110 ? (
     gfx_x = tip_tx; gfx_y = tip_l1; gfx_printf("Tiny anti-collapse drift.");
     gfx_x = tip_tx; gfx_y = tip_l2; gfx_printf("Green trail shows motion envelope.");
     gfx_x = tip_tx; gfx_y = tip_l3; gfx_printf("Low values add life, not travel.");
-  ) : tip_id == 110 ? (
+  ) : tip_id == 111 ? (
     gfx_x = tip_tx; gfx_y = tip_l1; gfx_printf("Final gain after spatial processing.");
     gfx_x = tip_tx; gfx_y = tip_l2; gfx_printf("Use for level match, not distance.");
     gfx_x = tip_tx; gfx_y = tip_l3; gfx_printf("Right-click resets to 0 dB.");
