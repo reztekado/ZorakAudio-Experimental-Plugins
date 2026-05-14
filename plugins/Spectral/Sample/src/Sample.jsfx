@@ -501,7 +501,7 @@ function update_sample_cluster(sm) local(br sh tr len pitch len_norm pitch_norm)
   len_norm = clamp01(log(sm[SM_LENMS] + 1) / log(5001));
   len = min(4, max(0, floor(len_norm * 5)));
   pitch_norm = clamp01((sm[SM_ROOT] - ROOT_LOW) / max(ROOT_HIGH - ROOT_LOW, 1));
-  pitch = sm[SM_PITCHCONF] > 0.55 ? min(5, max(0, floor(pitch_norm * 6))) : 0;
+  pitch = sm[SM_PITCHCONF] > 0.42 ? min(5, max(0, floor(pitch_norm * 6))) : 0;
 
   sm[SM_CLUSTER] = br + sh * 4 + tr * 16 + len * 64 + pitch * 320;
 );
@@ -545,7 +545,7 @@ function sample_descriptor_distance(a b region_mode) local(
   lenerr    = min(1.8, abs(log((a[SM_LENMS] + 1) / (b[SM_LENMS] + 1))));
 
   pitcherr = 0;
-  (a[SM_PITCHCONF] > 0.45 && b[SM_PITCHCONF] > 0.45) ? (
+  (a[SM_PITCHCONF] > 0.38 && b[SM_PITCHCONF] > 0.38) ? (
     pitcherr = min(1.5, abs(a[SM_ROOT] - b[SM_ROOT]) / 24);
   );
 
@@ -758,7 +758,7 @@ function choose_region_donor(src_sid region_mode wideness vix) local(
           regionerr = abs(log((span + 1) / (src_span + 1)));
 
           pitcherr = 0;
-          (src[SM_PITCHCONF] > 0.45 && sm[SM_PITCHCONF] > 0.45) ? (
+          (src[SM_PITCHCONF] > 0.38 && sm[SM_PITCHCONF] > 0.38) ? (
             pitcherr = abs(sm[SM_ROOT] - src[SM_ROOT]) / 24;
           );
 
@@ -803,7 +803,7 @@ function choose_region_donor(src_sid region_mode wideness vix) local(
             regionerr = abs(log((span + 1) / (src_span + 1)));
 
             pitcherr = 0;
-            (src[SM_PITCHCONF] > 0.45 && sm[SM_PITCHCONF] > 0.45) ? (
+            (src[SM_PITCHCONF] > 0.38 && sm[SM_PITCHCONF] > 0.38) ? (
               pitcherr = abs(sm[SM_ROOT] - src[SM_ROOT]) / 24;
             );
 
@@ -1345,72 +1345,171 @@ function count_active_voices() local(i v cnt)
 );
 
 function estimate_pitch(sm) local(
-  ptr nch sr frames attack
-  start win endp i
-  x prevsign signcur
-  last_cross interval
-  sumint sumint2 cnt
-  mu var relvar freq note conf
+  ptr nch sr frames attack head tail
+  decim effsr win minlag maxlag cand start maxstart
+  i j lag endn x lp hp sumsq rms diff cumdiff cmndf
+  best_note best_conf best_score cand_bestlag cand_bestcm cand_note cand_conf cand_score
+  fallback_lag fallback_cm fallback_val val lagf y0 y1 y2 den delta
+  sumxy sumx2 sumy2 x0 y0s corr freq cycles energy_ok transient_bias
 )
 (
+  // v14 PitchSnap: replace brittle zero-cross pitch with a cheap YIN-style
+  // normalized difference pass on stable post-onset windows. This intentionally
+  // looks for pitched/ringing body content, not the noisy transient itself.
   ptr    = sm[SM_PTR]   | 0;
   nch    = max(1, sm[SM_NCH] | 0);
-  sr     = sm[SM_SR];
+  sr     = max(1000, sm[SM_SR]);
   frames = sm[SM_FRAMES] | 0;
-  attack = sm[SM_ATTACK] | 0;
+  attack = clamp(sm[SM_ATTACK] | 0, 0, max(0, frames - 2));
+  head   = clamp(sm[SM_HEADEND] | 0, attack, max(attack, frames - 2));
+  tail   = clamp(sm[SM_TAILSTART] | 0, head + 1, max(head + 1, frames - 2));
 
-  note = 60;
-  conf = 0;
+  best_note = 60;
+  best_conf = 0;
+  best_score = -1000000;
 
-  start = attack + min(64, max(8, floor(frames * 0.02)));
-  win   = min(2048, frames - start - 1);
+  frames > 320 ? (
+    // Decimate to keep bank scan cheap while still covering musical pitch.
+    decim = max(1, floor(sr / 12000));
+    effsr = sr / decim;
+    win = clamp(floor(effsr * 0.055), 320, min(896, ONSET_SCRATCH_MAX));
+    win = min(win, max(64, floor((frames - 2) / decim)));
+    minlag = max(3, floor(effsr / 2600));
+    maxlag = min(floor(effsr / 42), floor(win * 0.58));
 
-  win > 256 ? (
-    last_cross = -1;
-    sumint = 0;
-    sumint2 = 0;
-    cnt = 0;
+    (win > 96 && maxlag > minlag + 4) ? (
+      cand = 0;
+      while (cand < 3) (
+        cand == 0 ? start = head + floor(sr * 0.006)
+        : cand == 1 ? start = attack + floor(sr * 0.026)
+        : start = head + floor(max(0, tail - head) * 0.42);
 
-    x = mono_frame(ptr, nch, start);
-    prevsign = x >= 0 ? 1 : -1;
+        maxstart = max(0, frames - 2 - win * decim);
+        start = clamp(floor(start), 0, maxstart);
 
-    i = start + 1;
-    endp = start + win;
-    while (i < endp) (
-      x = mono_frame(ptr, nch, i);
-      signcur = x >= 0 ? 1 : -1;
+        lp = mono_frame(ptr, nch, start);
+        sumsq = 0;
+        i = 0;
+        while (i < win) (
+          x = mono_frame(ptr, nch, start + i * decim);
+          lp += (x - lp) * 0.038;
+          hp = x - lp;
+          onset_raw_base[i] = hp;
+          sumsq += hp * hp;
+          i += 1;
+        );
 
-      signcur != prevsign ? (
-        last_cross >= 0 ? (
-          interval = i - last_cross;
-          interval > 1 ? (
-            sumint += interval;
-            sumint2 += interval * interval;
-            cnt += 1;
+        rms = sqrt(sumsq / max(1, win));
+        energy_ok = rms > max(0.000003, sm[SM_RMS] * 0.045);
+        energy_ok ? (
+          cumdiff = 0;
+          lag = 1;
+          while (lag <= maxlag) (
+            diff = 0;
+            endn = win - lag;
+            j = 0;
+            while (j < endn) (
+              x0 = onset_raw_base[j];
+              y0s = onset_raw_base[j + lag];
+              diff += (x0 - y0s) * (x0 - y0s);
+              j += 1;
+            );
+
+            cumdiff += diff;
+            onset_smooth_base[lag] = diff * lag / max(cumdiff, 0.00000000000000000001);
+            lag += 1;
+          );
+
+          cand_bestlag = -1;
+          cand_bestcm = 1000000;
+          fallback_lag = -1;
+          fallback_cm = 1000000;
+          fallback_val = 1000000;
+
+          lag = minlag + 1;
+          while (lag < maxlag) (
+            cmndf = onset_smooth_base[lag];
+            val = cmndf + (lag / max(1, maxlag)) * 0.035;
+            val < fallback_val ? (
+              fallback_val = val;
+              fallback_cm = cmndf;
+              fallback_lag = lag;
+            );
+
+            // First credible local minimum. This avoids octave/subharmonic creep
+            // where a later repeated period looks slightly cleaner.
+            (cand_bestlag < 0 && cmndf < 0.28 && cmndf <= onset_smooth_base[lag - 1] && cmndf < onset_smooth_base[lag + 1]) ? (
+              cand_bestlag = lag;
+              cand_bestcm = cmndf;
+            );
+            lag += 1;
+          );
+
+          cand_bestlag < 0 ? (
+            cand_bestlag = fallback_lag;
+            cand_bestcm = fallback_cm;
+          );
+
+          cand_bestlag > 0 ? (
+            lagf = cand_bestlag;
+            (cand_bestlag > 1 && cand_bestlag < maxlag) ? (
+              y0 = onset_smooth_base[cand_bestlag - 1];
+              y1 = onset_smooth_base[cand_bestlag];
+              y2 = onset_smooth_base[cand_bestlag + 1];
+              den = y0 - 2 * y1 + y2;
+              abs(den) > 0.000000000001 ? (
+                delta = 0.5 * (y0 - y2) / den;
+                abs(delta) <= 0.5 ? lagf = cand_bestlag + delta;
+              );
+            );
+
+            sumxy = 0;
+            sumx2 = 0;
+            sumy2 = 0;
+            endn = win - cand_bestlag;
+            j = 0;
+            while (j < endn) (
+              x0 = onset_raw_base[j];
+              y0s = onset_raw_base[j + cand_bestlag];
+              sumxy += x0 * y0s;
+              sumx2 += x0 * x0;
+              sumy2 += y0s * y0s;
+              j += 1;
+            );
+
+            corr = sumxy / sqrt(max(sumx2 * sumy2, 0.00000000000000000001));
+            corr = clamp(corr, -1, 1);
+            freq = effsr / max(1, lagf);
+
+            (freq >= 35 && freq <= 2600) ? (
+              cycles = win / max(1, lagf);
+              cand_note = 69 + 17.31234049066756 * log(freq / 440);
+              transient_bias = clamp01(sm[SM_FLAGS]);
+              cand_conf = clamp01((0.62 - cand_bestcm) / 0.54);
+              cand_conf *= clamp01((corr - 0.06) / 0.70);
+              cand_conf *= clamp01((cycles - 1.45) / 4.30);
+              // Transient-rich impacts can have a valid ring, but do not let the
+              // detector hallucinate a huge confidence from the click itself.
+              cand_conf *= lerp(1.00, 0.76, transient_bias * (1 - clamp01(corr)));
+              cand_conf = clamp01(cand_conf);
+              cand_score = cand_conf + corr * 0.11 - cand_bestcm * 0.06;
+
+              cand_score > best_score ? (
+                best_score = cand_score;
+                best_note = cand_note;
+                best_conf = cand_conf;
+              );
+            );
           );
         );
-        last_cross = i;
-        prevsign = signcur;
-      );
 
-      i += 1;
-    );
-
-    cnt >= 8 ? (
-      mu = sumint / cnt;
-      var = max(0, sumint2 / cnt - mu * mu);
-      relvar = sqrt(var) / max(mu, 0.000001);
-      freq = sr / max(2 * mu, 1);
-
-      (freq >= 30 && freq <= 4000) ? (
-        note = 69 + 17.31234049066756 * log(freq / 440);
-        conf = clamp01(1 - relvar * 4);
+        cand += 1;
       );
     );
   );
 
-  sm[SM_PITCHNOTE] = note;
-  sm[SM_PITCHCONF] = conf;
+  sm[SM_PITCHNOTE] = best_note;
+  sm[SM_PITCHCONF] = best_conf;
 );
 
 function analyze_sample_classic(sm) local(
@@ -2242,7 +2341,7 @@ function refresh_bank_stats() local(
     while (i < sample_count) (
       sm = sample_meta_base + i * SM_STRIDE;
       spread_root = ROOT_LOW + i * spread_step;
-      sm[SM_ROOT] = sm[SM_PITCHCONF] > 0.55 ? clamp(sm[SM_PITCHNOTE], 0, 127) : spread_root;
+      sm[SM_ROOT] = sm[SM_PITCHCONF] > 0.40 ? clamp(sm[SM_PITCHNOTE], 0, 127) : spread_root;
       update_sample_cluster(sm);
       pitch_sum += sm[SM_PITCHCONF];
       bright_sum += sm[SM_BRIGHT];
@@ -2432,7 +2531,7 @@ function choose_tail_donor(src_sid wideness) local(
         tailerr   = abs((sm[SM_FRAMES] - sm[SM_TAILSTART]) - (src[SM_FRAMES] - src[SM_TAILSTART])) / max(src[SM_FRAMES], 1);
 
         pitcherr = 0;
-        (src[SM_PITCHCONF] > 0.45 && sm[SM_PITCHCONF] > 0.45) ? (
+        (src[SM_PITCHCONF] > 0.38 && sm[SM_PITCHCONF] > 0.38) ? (
           pitcherr = abs(sm[SM_ROOT] - src[SM_ROOT]) / 24;
         );
 
@@ -2464,7 +2563,7 @@ function choose_tail_donor(src_sid wideness) local(
           tailerr   = abs((sm[SM_FRAMES] - sm[SM_TAILSTART]) - (src[SM_FRAMES] - src[SM_TAILSTART])) / max(src[SM_FRAMES], 1);
 
           pitcherr = 0;
-          (src[SM_PITCHCONF] > 0.45 && sm[SM_PITCHCONF] > 0.45) ? (
+          (src[SM_PITCHCONF] > 0.38 && sm[SM_PITCHCONF] > 0.38) ? (
             pitcherr = abs(sm[SM_ROOT] - src[SM_ROOT]) / 24;
           );
 
@@ -2645,7 +2744,7 @@ function fade_same_note_releases_for_retrigger(note chan skip_idx) local(i v)
 function start_voice(note vel chan) local(
   velnorm sid sm donor donor_sm voice_idx v
   srcsr norm gain env0 lively playmode gran_voice ggrain_amt voice_stretch voice_stretch_norm
-  driftcents raw_rate base_rate
+  driftcents raw_rate base_rate attack_rate pitch_protect pitch_abs head_hold_src head_hold_out
   transrich transprot translock hold_ms trans_hold_src trans_hold_out attack_preroll
   attack_norm pre_avail pre_keep align_guard align_jit
   j jmax pre startpos softskip gain_jit_db
@@ -2731,10 +2830,21 @@ function start_voice(note vel chan) local(
     raw_rate = (srcsr / srate) * midi_ratio(pitch_semi) * cents_ratio(driftcents);
     base_rate = raw_rate / voice_stretch;
 
-    hold_ms = translock ? (lerp(3.5, 9.5, transprot) + voice_stretch_norm * lerp(0.0, 2.5, transprot)) : 0;
-    hold_ms = min(hold_ms, sm[SM_LENMS] * 0.22);
+    // v14 PitchSnap: transient-pinned attack rate. Stretch never slows the
+    // protected head, and large pitch shifts are eased on transient-rich hits
+    // so impacts keep their snap instead of becoming smeared clicks.
+    pitch_abs = clamp01(abs(pitch_semi) / 12);
+    pitch_protect = transient_mode == 2 ? 0 : clamp01(transprot * (0.28 + 0.72 * pitch_abs));
+    transient_mode == 1 ? pitch_protect = clamp01(pitch_protect * 1.15 + transprot * 0.08);
+    attack_rate = (srcsr / srate) * midi_ratio(pitch_semi * (1 - pitch_protect)) * cents_ratio(driftcents);
+
+    hold_ms = translock ? (lerp(5.5, 15.5, transprot) + voice_stretch_norm * lerp(2.0, 9.5, transprot) + pitch_abs * transprot * 5.0) : 0;
+    hold_ms = min(hold_ms, sm[SM_LENMS] * 0.30);
     trans_hold_src = translock ? min(max(0, sm[SM_FRAMES] - 2 - startpos), floor(srcsr * hold_ms * 0.001)) : 0;
-    trans_hold_out = translock ? clamp(floor(trans_hold_src / max(abs(raw_rate), 0.000001)), 0, 4096) : 0;
+    head_hold_src = translock ? clamp(sm[SM_HEADEND] - startpos + floor(srcsr * 0.0015), 0, max(0, sm[SM_FRAMES] - 2 - startpos)) : 0;
+    head_hold_src = min(head_hold_src, floor(srcsr * lerp(0.010, 0.034, transprot)));
+    trans_hold_src = max(trans_hold_src, head_hold_src);
+    trans_hold_out = translock ? clamp(floor(trans_hold_src / max(abs(attack_rate), 0.000001)), 0, 8192) : 0;
 
     bodystart = clamp(sm[SM_HEADEND], 0, max(0, sm[SM_FRAMES] - 2));
     tailstart = clamp(sm[SM_TAILSTART], bodystart + 1, max(bodystart + 1, sm[SM_FRAMES] - 2));
@@ -2816,6 +2926,9 @@ function start_voice(note vel chan) local(
     v[VC_THOLD]    = max(1, trans_hold_out);
     v[VC_RHLEFT]   = 0;
     v[VC_RHLEN]    = max(1, release_handoff_samps);
+    v[VC_RAWRATE]  = raw_rate;
+    v[VC_ATKRATE]  = attack_rate;
+    v[VC_HEADSAFE] = sm[SM_HEADEND];
 
     gesture_len = floor(srate * lerp(0.22, 1.20, rand(1)) * lerp(0.82, 1.22, stretch_norm));
     gesture_len = max(64, gesture_len);
@@ -3508,7 +3621,10 @@ VC_LGLO      = 49;
 VC_LGHI      = 50;
 VC_LGREG     = 51;
 VC_LGRUN     = 52;
-VC_GBASE     = 53;
+VC_RAWRATE   = 53;
+VC_ATKRATE   = 54;
+VC_HEADSAFE  = 55;
+VC_GBASE     = 56;
 
 VG_ACTIVE    = 0;
 VG_AGE       = 1;
@@ -4185,10 +4301,11 @@ while (i < MAX_VOICES) (
 
         play_rate = v[VC_RATE];
         voice_stretch = max(1, v[VC_STRETCH]);
-        (tleft > 0 && voice_stretch > 1.01 && v[VC_TPROT] > 0) ? (
+        (tleft > 0 && v[VC_TPROT] > 0) ? (
           holdn = clamp01(tleft / max(1, v[VC_THOLD]));
-          holdn = holdn * holdn;
-          play_rate *= 1 + (voice_stretch - 1) * holdn * v[VC_TPROT];
+          // Smoothstep crossfade from protected transient rate to stretched / pitched body rate.
+          holdn = holdn * holdn * (3 - 2 * holdn);
+          play_rate = lerp(play_rate, v[VC_ATKRATE], holdn * v[VC_TPROT]);
         );
 
         pos += play_rate;
@@ -5771,7 +5888,7 @@ ui_hover_id == 1100 ? (
 );
 ui_hover_id == 1101 ? (
   sprintf(#tip_title, "Pitch confidence");
-  sprintf(#tip_body, "Average pitch detection strength.");
+  sprintf(#tip_body, "YIN-style body/ring pitch confidence.");
 );
 ui_hover_id == 1102 ? (
   sprintf(#tip_title, "Brightness");
