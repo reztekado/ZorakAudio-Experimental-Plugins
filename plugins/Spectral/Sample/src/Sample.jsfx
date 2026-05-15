@@ -1,7 +1,7 @@
-desc:Load-and-Go Psycho MultiSampler (FluxBridge + tape + hybrid + granular v16-focuscal)
+desc:Load-and-Go Psycho MultiSampler (FluxBridge + tape + hybrid + granular v18-formantdrive)
 tags:instrument sampler ui
 
-// v16 FocusCal: bank-aware Color and Focus calibration from brightness/attack-focus statistics.
+// v18 FormantDrive: Shift+drag Pitch controls an audible hidden transient-safe formant/resonance shift.
 // v13 CrossFlow: keeps v12 learned continuation, but prevents same-take reconstruction loops.
 // Slot 0 is the load-and-go sample bank.
 // Use the filename slot UI for this instrument and choose Open Multiple... on slot 0.
@@ -14,6 +14,7 @@ filename:0,sample.wav
 // #HELP: Sample is a load-and-go psycho multisampler: load files into slot 0, play notes, and shape the bank with compact macro controls.
 // #HELP: v15 BrightCal uses a filterbank brightness meter and bank-aware Color scaling.
 // #HELP: v16 FocusCal makes Focus bank-aware: high attack-focus banks soften harder and clarify more cautiously; dull banks clarify harder and soften more cautiously.
+// #HELP: v18 strengthens Shift+drag Pitch formant shifting: audible spectral-envelope warp plus resonance drive, still transient-protected.
 // #HELP:
 // #HELP: ## Quick start
 // #HELP: 1. Insert Sample. 2. On slot 0, choose Open Multiple... and select files. 3. Play MIDI notes. 4. Choose Random, Sequence, or Walk. 5. Shape with Envelope, Playback, Clean, Room Tame, Push, and Output.
@@ -31,7 +32,7 @@ filename:0,sample.wav
 // #HELP: Clean reduces low-level hiss/room bed. Room Tame restrains late room smear. Push is a salience budget: higher values push the instrument farther back, with 100% as extreme background placement.
 // #HELP:
 // #HELP: ## Tone and feel
-// #HELP: Color warms/brightens. Focus softens/clarifies. Width spreads safely. Liveliness adds variation. Truth moves from matched behavior toward raw sample individuality. Dynamics adds density with protection.
+// #HELP: Color warms/brightens. Focus softens/clarifies. Shift+drag Pitch adjusts hidden formant/resonance shift. Width spreads safely. Liveliness adds variation. Truth moves from matched behavior toward raw sample individuality. Dynamics adds density with protection.
 // #HELP:
 // #HELP: ## FluxBridge
 // #HELP: When the fixed FluxBridge CC lane block is present, Sample adds subtle motion-driven tone, focus, width, pan, and body contour while protecting transient-rich hits.
@@ -2068,6 +2069,17 @@ function reset_push_buffers()
 );
 
 
+
+function reset_formant_buffers()
+(
+  form_lp1_l = 0; form_lp2_l = 0; form_lp3_l = 0; form_lp4_l = 0; form_lp5_l = 0;
+  form_lp1_r = 0; form_lp2_r = 0; form_lp3_r = 0; form_lp4_r = 0; form_lp5_r = 0;
+
+  form_env0 = 0; form_env1 = 0; form_env2 = 0; form_env3 = 0; form_env4 = 0; form_env5 = 0;
+  form_g0 = 1; form_g1 = 1; form_g2 = 1; form_g3 = 1; form_g4 = 1; form_g5 = 1;
+  form_level = 1;
+);
+
 function clean_update_gain(idx det amount bias) local(env floorv thresh under tgt g amt upc)
 (
   env = clean_env_base[idx];
@@ -2331,6 +2343,173 @@ function apply_push() local(
 );
 
 
+
+function formant_env_lookup(idx)
+(
+  idx <= 0 ? form_env0
+  : idx == 1 ? form_env1
+  : idx == 2 ? form_env2
+  : idx == 3 ? form_env3
+  : idx == 4 ? form_env4
+  : form_env5;
+);
+
+function formant_env_at(x) local(i t a b)
+(
+  x = clamp(x, 0, 5);
+  i = floor(x);
+  t = x - i;
+  a = formant_env_lookup(i);
+  b = formant_env_lookup(min(5, i + 1));
+  lerp(a, b, t);
+);
+
+function formant_gain_from_ratio(cur target depth band_depth) local(r g d)
+(
+  d = clamp01(depth * band_depth);
+  r = clamp((target + 0.000000000001) / (cur + 0.000000000001), 0.12, 8.50);
+  // v18: v17 used a 0.50 exponent and was too polite. This is still bounded,
+  // but the envelope move is now strong enough to A/B at +/-12.
+  g = exp(log(r) * 0.92 * d);
+  clamp(g, db2amp(-15.0 * d), db2amp(13.0 * d));
+);
+
+function apply_formant_shift() local(
+  inL inR
+  b0l b1l b2l b3l b4l b5l b0r b1r b2r b3r b4r b5r
+  e0 e1 e2 e3 e4 e5
+  amt protect shift wetL wetR dryE wetE level target0 target1 target2 target3 target4 target5
+  g0 g1 g2 g3 g4 g5 coeff fs drive_db bump wetmix
+)
+(
+  // v18 FormantDrive: audible transient-safe spectral-envelope warp.
+  // This is deliberately not LPC/voice-only. It shifts the perceived resonance
+  // envelope with a cheap log-spaced band model and bypasses hard attacks.
+  inL = outL;
+  inR = outR;
+
+  form_lp1_l += (inL - form_lp1_l) * form_lp_c1;
+  form_lp2_l += (inL - form_lp2_l) * form_lp_c2;
+  form_lp3_l += (inL - form_lp3_l) * form_lp_c3;
+  form_lp4_l += (inL - form_lp4_l) * form_lp_c4;
+  form_lp5_l += (inL - form_lp5_l) * form_lp_c5;
+
+  form_lp1_r += (inR - form_lp1_r) * form_lp_c1;
+  form_lp2_r += (inR - form_lp2_r) * form_lp_c2;
+  form_lp3_r += (inR - form_lp3_r) * form_lp_c3;
+  form_lp4_r += (inR - form_lp4_r) * form_lp_c4;
+  form_lp5_r += (inR - form_lp5_r) * form_lp_c5;
+
+  b0l = form_lp1_l;
+  b1l = form_lp2_l - form_lp1_l;
+  b2l = form_lp3_l - form_lp2_l;
+  b3l = form_lp4_l - form_lp3_l;
+  b4l = form_lp5_l - form_lp4_l;
+  b5l = inL - form_lp5_l;
+
+  b0r = form_lp1_r;
+  b1r = form_lp2_r - form_lp1_r;
+  b2r = form_lp3_r - form_lp2_r;
+  b3r = form_lp4_r - form_lp3_r;
+  b4r = form_lp5_r - form_lp4_r;
+  b5r = inR - form_lp5_r;
+
+  e0 = b0l*b0l + b0r*b0r;
+  e1 = b1l*b1l + b1r*b1r;
+  e2 = b2l*b2l + b2r*b2r;
+  e3 = b3l*b3l + b3r*b3r;
+  e4 = b4l*b4l + b4r*b4r;
+  e5 = b5l*b5l + b5r*b5r;
+
+  form_env0 += (e0 - form_env0) * (e0 > form_env0 ? form_env_att_coeff : form_env_rel_coeff);
+  form_env1 += (e1 - form_env1) * (e1 > form_env1 ? form_env_att_coeff : form_env_rel_coeff);
+  form_env2 += (e2 - form_env2) * (e2 > form_env2 ? form_env_att_coeff : form_env_rel_coeff);
+  form_env3 += (e3 - form_env3) * (e3 > form_env3 ? form_env_att_coeff : form_env_rel_coeff);
+  form_env4 += (e4 - form_env4) * (e4 > form_env4 ? form_env_att_coeff : form_env_rel_coeff);
+  form_env5 += (e5 - form_env5) * (e5 > form_env5 ? form_env_att_coeff : form_env_rel_coeff);
+
+  amt = clamp01(abs(formant_shift_semi) / 12);
+  // v17 often vanished on short/transient-heavy sources because protection could
+  // zero the whole effect. v18 protects the head, but never fully mutes max shift.
+  protect = clamp01(transient_guard_s * (0.42 + 0.10 * trans_mode_mix) + clean_head_bus * 0.08 + room_head_bus * 0.06);
+  amt *= (1 - protect * 0.72);
+
+  amt > 0.0001 ? (
+    // +/-12 now spans roughly half the six-band envelope, not barely one band.
+    shift = (formant_shift_semi / 12) * 2.70;
+
+    // Positive formant shift means the envelope moves upward: each high band
+    // borrows the energy expectation that used to live lower on the log axis.
+    target0 = formant_env_at(0 - shift);
+    target1 = formant_env_at(1 - shift);
+    target2 = formant_env_at(2 - shift);
+    target3 = formant_env_at(3 - shift);
+    target4 = formant_env_at(4 - shift);
+    target5 = formant_env_at(5 - shift);
+
+    g0 = formant_gain_from_ratio(form_env0, target0, amt, 0.72);
+    g1 = formant_gain_from_ratio(form_env1, target1, amt, 1.00);
+    g2 = formant_gain_from_ratio(form_env2, target2, amt, 1.12);
+    g3 = formant_gain_from_ratio(form_env3, target3, amt, 1.12);
+    g4 = formant_gain_from_ratio(form_env4, target4, amt, 1.00);
+    g5 = formant_gain_from_ratio(form_env5, target5, amt, 0.78);
+
+    // Static resonance-drive fallback: if the live envelope is flat/noisy, a pure
+    // ratio warp can do almost nothing. This makes +/-12 unmistakable without a
+    // full extra Color knob; it is shaped like body/mouth size, not a simple tilt.
+    fs = clamp(formant_shift_semi / 12, -1, 1);
+    drive_db = fs * (4.0 + 8.0 * amt);
+    g0 *= db2amp(-0.92 * drive_db);
+    g1 *= db2amp(-0.58 * drive_db);
+    g2 *= db2amp(-0.12 * drive_db);
+    g3 *= db2amp( 0.34 * drive_db);
+    g4 *= db2amp( 0.70 * drive_db);
+    g5 *= db2amp( 0.82 * drive_db);
+
+    bump = abs(fs) * (1.8 + 4.2 * amt);
+    fs >= 0 ? (
+      g3 *= db2amp( bump * 0.65);
+      g4 *= db2amp( bump * 0.52);
+      g1 *= db2amp(-bump * 0.26);
+    ) : (
+      g1 *= db2amp( bump * 0.70);
+      g2 *= db2amp( bump * 0.46);
+      g4 *= db2amp(-bump * 0.30);
+    );
+
+    coeff = form_gain_coeff * (0.70 + 0.90 * amt);
+    form_g0 += (g0 - form_g0) * coeff;
+    form_g1 += (g1 - form_g1) * coeff;
+    form_g2 += (g2 - form_g2) * coeff;
+    form_g3 += (g3 - form_g3) * coeff;
+    form_g4 += (g4 - form_g4) * coeff;
+    form_g5 += (g5 - form_g5) * coeff;
+
+    wetL = b0l * form_g0 + b1l * form_g1 + b2l * form_g2 + b3l * form_g3 + b4l * form_g4 + b5l * form_g5;
+    wetR = b0r * form_g0 + b1r * form_g1 + b2r * form_g2 + b3r * form_g3 + b4r * form_g4 + b5r * form_g5;
+
+    dryE = inL*inL + inR*inR + 0.000000000001;
+    wetE = wetL*wetL + wetR*wetR + 0.000000000001;
+    // Keep level sane, but do not normalize the audible formant contrast away.
+    level = clamp(sqrt(dryE / wetE), 0.78, 1.22);
+    form_level += (level - form_level) * form_level_coeff;
+    wetL *= form_level;
+    wetR *= form_level;
+
+    wetmix = clamp01(0.20 + 0.80 * sqrt(amt));
+    outL = lerp(inL, wetL, wetmix);
+    outR = lerp(inR, wetR, wetmix);
+  ) : (
+    form_g0 += (1 - form_g0) * form_gain_coeff;
+    form_g1 += (1 - form_g1) * form_gain_coeff;
+    form_g2 += (1 - form_g2) * form_gain_coeff;
+    form_g3 += (1 - form_g3) * form_gain_coeff;
+    form_g4 += (1 - form_g4) * form_gain_coeff;
+    form_g5 += (1 - form_g5) * form_gain_coeff;
+    form_level += (1 - form_level) * form_level_coeff;
+  );
+);
+
 function reset_bank_state() local(i)
 (
   sample_count = 0;
@@ -2368,6 +2547,7 @@ function reset_bank_state() local(i)
   reset_clean_buffers();
   reset_room_buffers();
   reset_push_buffers();
+  reset_formant_buffers();
   init_flow_model();
   transient_guard_s = 0;
   seam_bridge_env = 0;
@@ -2471,6 +2651,7 @@ function reanalyze_bank() local(i sm)
   reset_clean_buffers();
   reset_room_buffers();
   reset_push_buffers();
+  reset_formant_buffers();
   transient_guard_s = 0;
   seq_cursor = 0;
   last_sid = -1;
@@ -3168,6 +3349,7 @@ function release_all_voices_transport(hard) local(i v)
     reset_clean_buffers();
     reset_room_buffers();
     reset_push_buffers();
+    reset_formant_buffers();
   );
 );
 
@@ -3981,6 +4163,23 @@ push_common_rel_coeff = 0.002;
 push_side_att_coeff = 0.01;
 push_side_rel_coeff = 0.001;
 
+
+formant_shift_semi = 0;
+form_lp_c1 = 0.02;
+form_lp_c2 = 0.05;
+form_lp_c3 = 0.11;
+form_lp_c4 = 0.24;
+form_lp_c5 = 0.52;
+form_env_att_coeff = 0.02;
+form_env_rel_coeff = 0.003;
+form_gain_coeff = 0.02;
+form_level_coeff = 0.004;
+form_lp1_l = 0; form_lp2_l = 0; form_lp3_l = 0; form_lp4_l = 0; form_lp5_l = 0;
+form_lp1_r = 0; form_lp2_r = 0; form_lp3_r = 0; form_lp4_r = 0; form_lp5_r = 0;
+form_env0 = 0; form_env1 = 0; form_env2 = 0; form_env3 = 0; form_env4 = 0; form_env5 = 0;
+form_g0 = 1; form_g1 = 1; form_g2 = 1; form_g3 = 1; form_g4 = 1; form_g5 = 1;
+form_level = 1;
+
 slot_signature_loaded = -999999;
 pending_signature = -999999;
 rescan_pending = 0;
@@ -4005,6 +4204,7 @@ ui_now = 0;
 ui_last_click_id = -1;
 ui_last_click_t = -10;
 ui_dblclick_time = 0.32;
+pitch_alt_active = 0;
 
 mix_fast = 0;
 mix_slow = 0;
@@ -4033,6 +4233,7 @@ m2e_reset();
 
 @serialize
 file_var(0, slope_schema);
+file_var(0, formant_shift_semi);
 
 @slider
 attack_samps = max(1, floor(slider2 * srate * 0.001));
@@ -4069,6 +4270,7 @@ release_coef = release_samps <= 1 ? 0 : exp(-6.90775527898214 / release_samps);
 truth_mix = clamp01(slider10);
 out_trim = db2amp(slider11);
 pitch_semi = clamp(slider12, -24, 24);
+formant_shift_semi = clamp(formant_shift_semi, -12, 12);
 selection_mode = clamp(slider13 | 0, 0, 2);
 sequence_mode = selection_mode == 1 ? 1 : 0;
 walk_mode = selection_mode == 2 ? 1 : 0;
@@ -4186,6 +4388,16 @@ push_common_att_coeff = 1 - exp(-6.90775527898214 / max(1, floor((0.070 + 0.045 
 push_common_rel_coeff = 1 - exp(-6.90775527898214 / max(1, floor((0.750 + 1.650 * push_amt) * srate)));
 push_side_att_coeff = 1 - exp(-6.90775527898214 / max(1, floor((0.110 + 0.060 * (1 - push_amt)) * srate)));
 push_side_rel_coeff = 1 - exp(-6.90775527898214 / max(1, floor((0.900 + 1.900 * push_amt) * srate)));
+
+form_lp_c1 = clamp(1 - exp(-6.283185307179586 * min(190, srate * 0.49) / max(srate, 1)), 0.0001, 0.72);
+form_lp_c2 = clamp(1 - exp(-6.283185307179586 * min(520, srate * 0.49) / max(srate, 1)), 0.0002, 0.78);
+form_lp_c3 = clamp(1 - exp(-6.283185307179586 * min(1250, srate * 0.49) / max(srate, 1)), 0.0003, 0.84);
+form_lp_c4 = clamp(1 - exp(-6.283185307179586 * min(3000, srate * 0.49) / max(srate, 1)), 0.0005, 0.90);
+form_lp_c5 = clamp(1 - exp(-6.283185307179586 * min(7200, srate * 0.49) / max(srate, 1)), 0.0010, 0.95);
+form_env_att_coeff = 1 - exp(-6.90775527898214 / max(1, floor(0.010 * srate)));
+form_env_rel_coeff = 1 - exp(-6.90775527898214 / max(1, floor(0.135 * srate)));
+form_gain_coeff = 1 - exp(-6.90775527898214 / max(1, floor(0.018 * srate)));
+form_level_coeff = 1 - exp(-6.90775527898214 / max(1, floor(0.045 * srate)));
 
 (onset_mode_target != onset_mode_active) ? (
   onset_mode_active = onset_mode_target;
@@ -5134,6 +5346,7 @@ m2e_sat_mix *= 0.16 + 0.84 * m2e_transient_damp * m2e_transient_damp;
 
 clean_amt > 0.0001 ? apply_cleaner();
 room_amt > 0.0001 ? apply_room_tame();
+abs(formant_shift_semi) > 0.0001 ? apply_formant_shift();
 
 tone_lp_l += (outL - tone_lp_l) * tone_lp_coeff;
 tone_lp_r += (outR - tone_lp_r) * tone_lp_coeff;
@@ -5829,16 +6042,38 @@ cell_h = floor((knob_area_h - knob_row_gap * max(0, knob_rows - 1)) / max(1, kno
 cell_h = min(cell_h, 112);
 kb_r = clamp(min(cell_w * 0.18, cell_h * 0.24), 18, knob_cols >= 6 ? 24 : 22);
 
-// Pitch
+// Pitch / hidden Formant shift
+// Shift+drag or Shift+wheel this knob to adjust formant/resonance shift without adding a visible control.
 grid_idx = 0;
 cell_x = right_inner_x + (grid_idx % knob_cols) * (cell_w + knob_col_gap);
 cell_y = knob_panel_top + floor(grid_idx / knob_cols) * (cell_h + knob_row_gap);
 kc = cell_x + cell_w * 0.5; ky = cell_y + kb_r + 6; label_y = min(cell_y + cell_h - 12, ky + kb_r + 12);
-nv = ui_knob(307, kc, ky, kb_r, slider12, -24, 24, 0, 0.021); abs(nv - slider12) > 0.0000001 ? (slider12 = nv; gfx_slider_mask |= MASK_S12;);
+pitch_hot = ((mouse_x - kc) * (mouse_x - kc) + (mouse_y - ky) * (mouse_y - ky)) <= kb_r * kb_r;
+(mouse_pressed && pitch_hot) ? pitch_alt_active = ui_shift ? 1 : 0;
+(ui_active != 317 && !mouse_down) ? pitch_alt_active = 0;
+pitch_alt_use = pitch_alt_active || (ui_shift && (pitch_hot || ui_active == 317));
+pitch_alt_use ? (
+  nv = ui_knob(317, kc, ky, kb_r, formant_shift_semi, -12, 12, 0, 0.021);
+  abs(nv - formant_shift_semi) > 0.0000001 ? (
+    formant_shift_semi = clamp(nv, -12, 12);
+    ui_value_changed = 1;
+  );
+  pitch_hot && ui_shift && !ui_wheel_used && abs(ui_wheel) >= 1 ? (
+    formant_shift_semi = clamp(formant_shift_semi + (ui_wheel > 0 ? 0.25 : -0.25) * max(1, floor(abs(ui_wheel) / 120 + 0.5)), -12, 12);
+    ui_wheel_used = 1;
+    ui_value_changed = 1;
+  );
+) : (
+  nv = ui_knob(307, kc, ky, kb_r, slider12, -24, 24, 0, 0.021);
+  abs(nv - slider12) > 0.0000001 ? (slider12 = nv; gfx_slider_mask |= MASK_S12;);
+);
 gfx_setfont(1, "Arial", 10, 0); gfx_r = 0.88; gfx_g = 0.93; gfx_b = 0.98; gfx_a = 1;
-sprintf(#ui_buf, "%+.1f", slider12); gfx_measurestr(#ui_buf, tw, th); gfx_x = kc - tw * 0.5; gfx_y = ky - th * 0.5; gfx_drawstr(#ui_buf);
+pitch_alt_use ? sprintf(#ui_buf, "F%+.1f", formant_shift_semi) : (
+  abs(formant_shift_semi) > 0.05 ? sprintf(#ui_buf, "P%+.0f/F%+.0f", slider12, formant_shift_semi) : sprintf(#ui_buf, "%+.1f", slider12)
+);
+gfx_measurestr(#ui_buf, tw, th); gfx_x = kc - tw * 0.5; gfx_y = ky - th * 0.5; gfx_drawstr(#ui_buf);
 gfx_setfont(1, "Arial", 11, 0); gfx_r = 0.86; gfx_g = 0.90; gfx_b = 0.96; gfx_a = 1;
-sprintf(#ui_buf, "Pitch"); draw_center_buf(cell_x, label_y, cell_w);
+pitch_alt_use ? sprintf(#ui_buf, "Formant") : (abs(formant_shift_semi) > 0.05 ? sprintf(#ui_buf, "Pitch/Form") : sprintf(#ui_buf, "Pitch")); draw_center_buf(cell_x, label_y, cell_w);
 
 // Stretch
 grid_idx = 1;
@@ -6113,9 +6348,14 @@ ui_hover_id == 312 ? (
   sprintf(#tip_title, "Dynamics");
   sprintf(#tip_body, "%.2f density and guard.", slider22);
 );
-ui_hover_id == 307 ? (
-  sprintf(#tip_title, "Pitch");
-  sprintf(#tip_body, "%+.1f semitones.", slider12);
+((ui_hover_id == 307) || (ui_hover_id == 317)) ? (
+  (ui_shift || pitch_alt_active || ui_hover_id == 317) ? (
+    sprintf(#tip_title, "Formant");
+    sprintf(#tip_body, "%+.1f semitones resonance shift. Shift+drag Pitch.", formant_shift_semi);
+  ) : (
+    sprintf(#tip_title, "Pitch");
+    sprintf(#tip_body, "%+.1f semitones. Formant F%+.1f. Shift+drag for Formant.", slider12, formant_shift_semi);
+  );
 );
 ui_hover_id == 308 ? (
   sprintf(#tip_title, "Stretch");
