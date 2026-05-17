@@ -151,13 +151,54 @@ _JSFX_IMPORT_RE = re.compile(
 
 
 def _merge_import_bundle(dst_preamble: list[str], dst_order: list[str], dst_sections: dict[str, list[str]],
-                         src_preamble: list[str], src_order: list[str], src_sections: dict[str, list[str]]) -> None:
+                         dst_headers: dict[str, str],
+                         src_preamble: list[str], src_order: list[str], src_sections: dict[str, list[str]],
+                         src_headers: dict[str, str]) -> None:
     dst_preamble.extend(src_preamble)
     for sec in src_order:
         if sec not in dst_sections:
             dst_sections[sec] = []
             dst_order.append(sec)
+        if sec not in dst_headers and sec in src_headers:
+            dst_headers[sec] = src_headers[sec]
         dst_sections[sec].extend(src_sections.get(sec, []))
+
+
+def _parse_preprocessed_jsfx_bundle(text: str) -> tuple[list[str], list[str], dict[str, list[str]], dict[str, str]]:
+    preamble: list[str] = []
+    order: list[str] = []
+    sections: dict[str, list[str]] = {}
+    headers: dict[str, str] = {}
+    current: str | None = None
+    current_lines: list[str] = []
+    section_re = re.compile(r"^\s*@([A-Za-z_][A-Za-z0-9_]*)\b.*$")
+
+    def flush_current() -> None:
+        nonlocal current_lines
+        if current is None:
+            return
+        if current not in sections:
+            sections[current] = []
+            order.append(current)
+        sections[current].extend(current_lines)
+        current_lines = []
+
+    for raw_line in text.splitlines(True):
+        m_sec = section_re.match(raw_line)
+        if m_sec:
+            flush_current()
+            current = m_sec.group(1)
+            headers[current] = raw_line
+            current_lines = []
+            continue
+
+        if current is None:
+            preamble.append(raw_line)
+        else:
+            current_lines.append(raw_line)
+
+    flush_current()
+    return preamble, order, sections, headers
 
 
 def preprocess_jsfx_imports_from_path(path: Path, _stack: tuple[Path, ...] = ()) -> str:
@@ -170,6 +211,7 @@ def preprocess_jsfx_imports_from_path(path: Path, _stack: tuple[Path, ...] = ())
     preamble: list[str] = []
     order: list[str] = []
     sections: dict[str, list[str]] = {}
+    headers: dict[str, str] = {}
     current: str | None = None
     current_lines: list[str] = []
     section_re = re.compile(r"^\s*@([A-Za-z_][A-Za-z0-9_]*)\b.*$")
@@ -204,37 +246,11 @@ def preprocess_jsfx_imports_from_path(path: Path, _stack: tuple[Path, ...] = ())
                 )
 
             child_text = preprocess_jsfx_imports_from_path(inc_path, _stack + (path,))
-            child_preamble: list[str] = []
-            child_order: list[str] = []
-            child_sections: dict[str, list[str]] = {}
-            child_current: str | None = None
-            child_current_lines: list[str] = []
-
-            def flush_child() -> None:
-                nonlocal child_current_lines
-                if child_current is None:
-                    return
-                if child_current not in child_sections:
-                    child_sections[child_current] = []
-                    child_order.append(child_current)
-                child_sections[child_current].extend(child_current_lines)
-                child_current_lines = []
-
-            for child_line in child_text.splitlines(True):
-                mc = section_re.match(child_line)
-                if mc:
-                    flush_child()
-                    child_current = mc.group(1)
-                    child_current_lines = []
-                    continue
-                if child_current is None:
-                    child_preamble.append(child_line)
-                else:
-                    child_current_lines.append(child_line)
-            flush_child()
+            child_preamble, child_order, child_sections, child_headers = _parse_preprocessed_jsfx_bundle(child_text)
 
             if current is None:
-                _merge_import_bundle(preamble, order, sections, child_preamble, child_order, child_sections)
+                _merge_import_bundle(preamble, order, sections, headers,
+                                     child_preamble, child_order, child_sections, child_headers)
             else:
                 current_lines.extend(child_preamble)
                 for sec in child_order:
@@ -244,12 +260,15 @@ def preprocess_jsfx_imports_from_path(path: Path, _stack: tuple[Path, ...] = ())
                         if sec not in sections:
                             sections[sec] = []
                             order.append(sec)
+                        if sec not in headers and sec in child_headers:
+                            headers[sec] = child_headers[sec]
                         sections[sec].extend(child_sections.get(sec, []))
             continue
 
         if m_sec:
             flush_current()
             current = m_sec.group(1)
+            headers[current] = raw_line
             current_lines = []
             continue
 
@@ -261,7 +280,8 @@ def preprocess_jsfx_imports_from_path(path: Path, _stack: tuple[Path, ...] = ())
     flush_current()
     out: list[str] = list(preamble)
     for sec in order:
-        out.append(f"@{sec}\n")
+        header = headers.get(sec, f"@{sec}\n")
+        out.append(header if header.endswith("\n") else header + "\n")
         out.extend(sections.get(sec, []))
         if out and not out[-1].endswith("\n"):
             out.append("\n")

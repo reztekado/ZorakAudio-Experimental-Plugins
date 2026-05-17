@@ -845,20 +845,25 @@ def _read_text_file(path: Path) -> str:
     return path.read_text(encoding="utf-8", errors="replace")
 
 def _merge_import_bundle(dst_preamble: List[str], dst_order: List[str], dst_sections: Dict[str, List[str]],
-                         src_preamble: List[str], src_order: List[str], src_sections: Dict[str, List[str]]) -> None:
+                         dst_headers: Dict[str, str],
+                         src_preamble: List[str], src_order: List[str], src_sections: Dict[str, List[str]],
+                         src_headers: Dict[str, str]) -> None:
     dst_preamble.extend(src_preamble)
     for sec in src_order:
         if sec not in dst_sections:
             dst_sections[sec] = []
             dst_order.append(sec)
+        if sec not in dst_headers and sec in src_headers:
+            dst_headers[sec] = src_headers[sec]
         dst_sections[sec].extend(src_sections.get(sec, []))
 
 
-def _parse_jsfx_import_bundle(source_path: Path, stack: List[Path]) -> Tuple[List[str], List[str], Dict[str, List[str]]]:
+def _parse_jsfx_import_bundle(source_path: Path, stack: List[Path]) -> Tuple[List[str], List[str], Dict[str, List[str]], Dict[str, str]]:
     text = _read_text_file(source_path)
     preamble: List[str] = []
     order: List[str] = []
     sections: Dict[str, List[str]] = {}
+    headers: Dict[str, str] = {}
 
     current: Optional[str] = None
     current_lines: List[str] = []
@@ -895,9 +900,10 @@ def _parse_jsfx_import_bundle(source_path: Path, stack: List[Path]) -> Tuple[Lis
                 chain = " -> ".join(str(p) for p in (stack + [inc_path]))
                 raise ValueError(f"Cyclic JSFX import chain: {chain}")
 
-            child_preamble, child_order, child_sections = _parse_jsfx_import_bundle(inc_path, stack + [inc_path])
+            child_preamble, child_order, child_sections, child_headers = _parse_jsfx_import_bundle(inc_path, stack + [inc_path])
             if current is None:
-                _merge_import_bundle(preamble, order, sections, child_preamble, child_order, child_sections)
+                _merge_import_bundle(preamble, order, sections, headers,
+                                     child_preamble, child_order, child_sections, child_headers)
             else:
                 current_lines.extend(child_preamble)
                 for sec in child_order:
@@ -907,12 +913,15 @@ def _parse_jsfx_import_bundle(source_path: Path, stack: List[Path]) -> Tuple[Lis
                         if sec not in sections:
                             sections[sec] = []
                             order.append(sec)
+                        if sec not in headers and sec in child_headers:
+                            headers[sec] = child_headers[sec]
                         sections[sec].extend(child_sections.get(sec, []))
             continue
 
         if m_sec:
             flush_current()
             current = m_sec.group(1)
+            headers[current] = raw_line
             current_lines = []
             continue
 
@@ -922,17 +931,18 @@ def _parse_jsfx_import_bundle(source_path: Path, stack: List[Path]) -> Tuple[Lis
             current_lines.append(raw_line)
 
     flush_current()
-    return preamble, order, sections
+    return preamble, order, sections, headers
 
 
 def preprocess_jsfx_imports(jsfx_text: str, source_path: Optional[Path]) -> str:
     if source_path is None:
         return jsfx_text
     src = source_path.resolve()
-    preamble, order, sections = _parse_jsfx_import_bundle(src, [src])
+    preamble, order, sections, headers = _parse_jsfx_import_bundle(src, [src])
     out_lines: List[str] = list(preamble)
     for sec in order:
-        out_lines.append(f"@{sec}\n")
+        header = headers.get(sec, f"@{sec}\n")
+        out_lines.append(header if header.endswith("\n") else header + "\n")
         out_lines.extend(sections.get(sec, []))
         if out_lines and not out_lines[-1].endswith("\n"):
             out_lines.append("\n")
