@@ -196,8 +196,13 @@ static std::map<DSPJSFX_State*, JSFXJuceProcessor*> gFileOwner;
 //
 // That keeps copy cost constant while still making "summary-at-the-top" layouts
 // visible to @gfx.
+
 static constexpr int kGfxSharedPrefixDoubles = 262144; // ~= 2 MiB
 static constexpr int kGfxSharedSuffixDoubles = 262144 * 8; // ~= 16 MiB
+static constexpr int kMaxGfxMemSpans = 16; // ZA-GFX-MEM-SYNC: auto prefix/suffix + explicit sparse ranges
+
+static constexpr uint8_t kGfxSyncToGfx   = 1u;
+static constexpr uint8_t kGfxSyncFromGfx = 2u;
 
 struct GfxMirrorRange
 {
@@ -205,41 +210,133 @@ struct GfxMirrorRange
     int count = 0;
 };
 
-static inline int buildGfxMirrorRanges (int64_t memN, std::array<GfxMirrorRange, 2>& out) noexcept
+struct GfxSyncMemRange
+{
+    int64_t base = 0;
+    int64_t count = 0;
+    uint8_t flags = kGfxSyncToGfx;
+};
+
+static inline uint8_t parseGfxSyncMemDirectionToken (std::string token) noexcept
+{
+    for (auto& c : token)
+        c = (char) std::toupper ((unsigned char) c);
+
+    if (token == "FROM_GFX" || token == "GFX_TO_DSP")
+        return kGfxSyncFromGfx;
+
+    if (token == "BIDIR" || token == "BIDIRECTIONAL" || token == "BOTH")
+        return (uint8_t) (kGfxSyncToGfx | kGfxSyncFromGfx);
+
+    return kGfxSyncToGfx;
+}
+
+static inline int64_t gfxSafeEndExclusive (int64_t base, int64_t count) noexcept
+{
+    if (count <= 0)
+        return base;
+
+    if (base > std::numeric_limits<int64_t>::max() - count)
+        return std::numeric_limits<int64_t>::max();
+
+    return base + count;
+}
+
+static inline int appendGfxMirrorRange (std::array<GfxMirrorRange, kMaxGfxMemSpans>& out,
+                                        int n,
+                                        int64_t base,
+                                        int64_t count,
+                                        int64_t memN) noexcept
+{
+    if (memN <= 0 || count <= 0)
+        return n;
+
+    if (n >= (int) out.size())
+        return n;
+
+    base = std::max<int64_t> ((int64_t) 0, base);
+
+    if (base >= memN)
+        return n;
+
+    const int64_t end = std::min<int64_t> (memN, gfxSafeEndExclusive (base, count));
+
+    if (end <= base)
+        return n;
+
+    const int64_t safeCount = std::min<int64_t> (end - base,
+                                                 (int64_t) std::numeric_limits<int>::max());
+
+    out[(size_t) n++] = GfxMirrorRange { base, (int) safeCount };
+    return n;
+}
+
+static inline int sortAndMergeGfxMirrorRanges (std::array<GfxMirrorRange, kMaxGfxMemSpans>& ranges,
+                                               int n) noexcept
+{
+    n = std::max (0, std::min (n, (int) ranges.size()));
+
+    std::sort (ranges.begin(), ranges.begin() + n,
+               [] (const GfxMirrorRange& a, const GfxMirrorRange& b)
+               {
+                   return a.base < b.base;
+               });
+
+    int outN = 0;
+
+    for (int i = 0; i < n; ++i)
+    {
+        auto r = ranges[(size_t) i];
+
+        if (r.count <= 0)
+            continue;
+
+        if (outN == 0)
+        {
+            ranges[(size_t) outN++] = r;
+            continue;
+        }
+
+        auto& prev = ranges[(size_t) (outN - 1)];
+        const int64_t prevEnd = gfxSafeEndExclusive (prev.base, (int64_t) prev.count);
+        const int64_t rEnd = gfxSafeEndExclusive (r.base, (int64_t) r.count);
+
+        if (r.base <= prevEnd)
+        {
+            prev.count = (int) std::min<int64_t> (std::max<int64_t> (prevEnd, rEnd) - prev.base,
+                                                 (int64_t) std::numeric_limits<int>::max());
+        }
+        else if (outN < (int) ranges.size())
+        {
+            ranges[(size_t) outN++] = r;
+        }
+    }
+
+    return outN;
+}
+
+static inline int buildGfxMirrorRanges (int64_t memN,
+                                        std::array<GfxMirrorRange, kMaxGfxMemSpans>& out) noexcept
 {
     int n = 0;
+
     if (memN <= 0)
         return 0;
 
     const int64_t prefixCount = std::min<int64_t> (memN, (int64_t) kGfxSharedPrefixDoubles);
-    if (prefixCount > 0)
-        out[(size_t) n++] = GfxMirrorRange { 0, (int) prefixCount };
+    n = appendGfxMirrorRange (out, n, 0, prefixCount, memN);
 
     if (memN > prefixCount)
     {
         const int64_t remaining = memN - prefixCount;
-        const int64_t suffixCount = std::min<int64_t> (remaining, (int64_t) kGfxSharedSuffixDoubles);
+        const int64_t suffixCount = std::min<int64_t> (remaining,
+                                                       (int64_t) kGfxSharedSuffixDoubles);
+
         if (suffixCount > 0)
-        {
-            const int64_t suffixBase = memN - suffixCount;
-
-            if (n > 0)
-            {
-                auto& prev = out[(size_t) (n - 1)];
-                const int64_t prevEnd = prev.base + (int64_t) prev.count;
-                if (suffixBase <= prevEnd)
-                {
-                    const int64_t mergedEnd = std::max<int64_t> (prevEnd, suffixBase + suffixCount);
-                    prev.count = (int) (mergedEnd - prev.base);
-                    return n;
-                }
-            }
-
-            out[(size_t) n++] = GfxMirrorRange { suffixBase, (int) suffixCount };
-        }
+            n = appendGfxMirrorRange (out, n, memN - suffixCount, suffixCount, memN);
     }
 
-    return n;
+    return sortAndMergeGfxMirrorRanges (out, n);
 }
 
 static inline bool isGfxMirroredMemIndex (int64_t index, int64_t memN) noexcept
@@ -247,14 +344,17 @@ static inline bool isGfxMirroredMemIndex (int64_t index, int64_t memN) noexcept
     if (index < 0 || index >= memN)
         return false;
 
-    std::array<GfxMirrorRange, 2> ranges {};
+    std::array<GfxMirrorRange, kMaxGfxMemSpans> ranges {};
     const int count = buildGfxMirrorRanges (memN, ranges);
+
     for (int i = 0; i < count; ++i)
     {
         const auto& r = ranges[(size_t) i];
-        if (index >= r.base && index < r.base + (int64_t) r.count)
+
+        if (index >= r.base && index < gfxSafeEndExclusive (r.base, (int64_t) r.count))
             return true;
     }
+
     return false;
 }
 
@@ -335,13 +435,29 @@ static inline int64_t parseJsfxDeclaredMaxMem (const char* jsfxText) noexcept
 static inline int64_t getGfxLogicalJsfxMemN (DSPJSFX_State* st, int64_t declaredMaxMem) noexcept
 {
     const int64_t tracked = getTrackedJsfxMemUsed (st);
+
     if (st == nullptr)
         return tracked;
 
-    if (declaredMaxMem > 0)
-        return std::max<int64_t> (tracked, std::min<int64_t> (declaredMaxMem, st->memN));
+    // ZA-GFX-MEM-SYNC:
+    // gMemUsed can be positive but stale. The AOT core only calls
+    // jsfx_ensure_mem() when an access crosses the current allocation; later
+    // JSFX writes inside that already-grown heap may not advance the high-water
+    // tracker. Do not let such a stale positive value truncate the normal low
+    // @gfx shared prefix, where meters/scopes/analyzer histories usually live.
+    const int64_t allocatedLowPrefix =
+        std::min<int64_t> (st->memN, (int64_t) kGfxSharedPrefixDoubles);
 
-    return tracked;
+    int64_t logical = std::max<int64_t> (tracked, allocatedLowPrefix);
+
+    if (declaredMaxMem > 0)
+    {
+        logical = std::max<int64_t> (logical,
+                                     std::min<int64_t> (declaredMaxMem, st->memN));
+    }
+
+    return std::max<int64_t> ((int64_t) 0,
+                              std::min<int64_t> (logical, st->memN));
 }
 
 static inline uint8_t getJsfxGfxVarFlags (int index) noexcept
@@ -435,6 +551,64 @@ static inline std::string trimAscii (std::string s)
         s.pop_back();
     return s;
 }
+
+static std::vector<GfxSyncMemRange> parseJsfxGfxSyncMemRanges (const char* jsfxText)
+{
+    std::vector<GfxSyncMemRange> out;
+
+    if (jsfxText == nullptr)
+        return out;
+
+    // Optional source/runtime metadata, for scripts that keep display data
+    // outside the automatic low-prefix/high-suffix mirror:
+    //   // @za:gfx_sync_mem 131200 4096 DSP_TO_GFX
+    //   // @za:gfx_sync_mem 135360 4096 DSP_TO_GFX
+    //   // @za:gfx_sync_mem 139520 4096 DSP_TO_GFX
+    // Direction defaults to DSP_TO_GFX. Supported direction tokens:
+    // DSP_TO_GFX, TO_GFX, FROM_GFX, GFX_TO_DSP, BIDIR, BIDIRECTIONAL, BOTH.
+    const std::regex reSync (
+        R"(^\s*//\s*@za:gfx_sync_mem\s*:?\s*([0-9]+)\s*(?:,|\s)\s*([0-9]+)(?:\s*(?:,|\s)\s*([A-Za-z0-9_\-]+))?.*$)",
+        std::regex::ECMAScript | std::regex::icase);
+
+    std::string text (jsfxText);
+    size_t start = 0;
+
+    while (start < text.size())
+    {
+        size_t end = text.find_first_of ("\r\n", start);
+
+        if (end == std::string::npos)
+            end = text.size();
+
+        const std::string line = text.substr (start, end - start);
+
+        size_t next = end;
+        while (next < text.size() && (text[next] == '\r' || text[next] == '\n'))
+            ++next;
+
+        start = next;
+
+        std::smatch m;
+
+        if (! std::regex_match (line, m, reSync))
+            continue;
+
+        const int64_t base = (int64_t) std::strtoll (m[1].str().c_str(), nullptr, 10);
+        const int64_t count = (int64_t) std::strtoll (m[2].str().c_str(), nullptr, 10);
+
+        if (base < 0 || count <= 0)
+            continue;
+
+        const uint8_t flags = m[3].matched
+            ? parseGfxSyncMemDirectionToken (trimAscii (m[3].str()))
+            : kGfxSyncToGfx;
+
+        out.push_back (GfxSyncMemRange { base, count, flags });
+    }
+
+    return out;
+}
+
 
 // Split a JSFX "<min,max,step{...},skew>" range string on commas, but ignore commas inside { }.
 // This is required because the enum-list itself is comma-separated.
@@ -1285,7 +1459,14 @@ extern "C" void jsfx_ensure_mem (DSPJSFX_State* st, int64_t needed)
 
     gMemOwner[st] = st->mem;
     gMemSize [st] = st->memN;
-    noteTrackedJsfxMemUsed (st, needed);
+
+    // ZA-GFX-MEM-SYNC:
+    // On growth, mark the whole new allocation as eligible for bounded @gfx
+    // prefix/suffix mirroring. The AOT layer only calls jsfx_ensure_mem() when
+    // an access crosses the current allocation; subsequent JSFX writes inside
+    // this newly-grown slack area may not call back here, so recording only the
+    // requested index can leave analyzer/scope buffers invisible to @gfx.
+    noteTrackedJsfxMemUsed (st, st->memN);
 }
 
 namespace
@@ -2350,6 +2531,7 @@ public:
         }
 
         jsfxDeclaredMaxMem = parseJsfxDeclaredMaxMem (kJsfxSourceText);
+        gfxSyncMemRanges = parseJsfxGfxSyncMemRanges (kJsfxSourceText);
 
         initStateMemory();
         jsfxRuntime.attachToState (&st);
@@ -4925,7 +5107,7 @@ public:
 
         std::array<double, 64> sliders {};
         std::vector<double> vars;
-        std::array<MemSpan, 2> memSpans {};
+        std::array<MemSpan, kMaxGfxMemSpans> memSpans {};
         int memSpanCount = 0;
         int64_t logicalMemN = 0;
         int varsCount = 0;
@@ -7536,6 +7718,24 @@ private:
         return true;
     }
 
+    bool isExplicitGfxMemWriteAllowed (int64_t index) const noexcept
+    {
+        if (index < 0)
+            return false;
+
+        for (const auto& r : gfxSyncMemRanges)
+        {
+            if ((r.flags & kGfxSyncFromGfx) == 0u)
+                continue;
+
+            if (index >= r.base && index < gfxSafeEndExclusive (r.base, r.count))
+                return true;
+        }
+
+        return false;
+    }
+
+
     bool applyQueuedGfxStateWrites() noexcept
     {
         uint32_t tail = gfxWriteTail.load (std::memory_order_relaxed);
@@ -7564,7 +7764,14 @@ private:
             {
                 const int64_t mi = (int64_t) w.index;
                 const int64_t logicalMemN = getGfxLogicalJsfxMemN (&st, jsfxDeclaredMaxMem);
-                if (st.mem != nullptr && isGfxMirroredMemIndex (mi, logicalMemN))
+
+                const bool inAutoMirror = isGfxMirroredMemIndex (mi, logicalMemN);
+                const bool inExplicitWritableRange = isExplicitGfxMemWriteAllowed (mi);
+
+                if (st.mem != nullptr
+                    && mi >= 0
+                    && mi < st.memN
+                    && (inAutoMirror || inExplicitWritableRange))
                 {
                     st.mem[(size_t) mi] = w.value;
                    #if defined(ZA_JSFX_CORRECTNESS_CHECK) && ZA_JSFX_CORRECTNESS_CHECK
@@ -7766,9 +7973,10 @@ void updateGfxSnapshotIfNeeded (int numSamples)
     if ((int) b.vars.size() != varCount)
         b.vars.resize ((size_t) varCount, 0.0);
 
-    // Copy state. Sliders + vars are tiny; mem is mirrored as two bounded windows
-    // (prefix + suffix) so @gfx can still see far-away summaries without dragging
-    // the entire DSP heap through the UI bridge every frame.
+    // Copy state. Sliders + vars are tiny; mem is mirrored as bounded windows
+    // (low prefix + high suffix) plus optional explicit sparse sync ranges, so
+    // @gfx can see meters/scopes/analyzer summaries without dragging the entire
+    // DSP heap through the UI bridge every frame.
     std::memcpy (b.sliders.data(), st.sliders, sizeof (double) * 64);
 
     if ((int) DSPJSFX_GFX_VAR_FLAGS_COUNT <= 0)
@@ -7785,29 +7993,66 @@ void updateGfxSnapshotIfNeeded (int numSamples)
     }
 
     b.memSpanCount = 0;
-    b.logicalMemN = getGfxLogicalJsfxMemN (&st, jsfxDeclaredMaxMem);
 
-    if (st.mem != nullptr && b.logicalMemN > 0)
+    const int64_t automaticLogicalMemN = getGfxLogicalJsfxMemN (&st, jsfxDeclaredMaxMem);
+    b.logicalMemN = automaticLogicalMemN;
+
+    if (st.mem != nullptr && st.memN > 0)
     {
-        std::array<GfxMirrorRange, 2> ranges {};
-        const int rangeCount = buildGfxMirrorRanges (b.logicalMemN, ranges);
+        std::array<GfxMirrorRange, kMaxGfxMemSpans> ranges {};
 
-        for (int i = 0; i < rangeCount; ++i)
+        int rangeCount = automaticLogicalMemN > 0
+            ? buildGfxMirrorRanges (automaticLogicalMemN, ranges)
+            : 0;
+
+        // ZA-GFX-MEM-SYNC: explicit sparse DSP->@gfx ranges are appended
+        // after the automatic bounded mirror, so a far-away requested range
+        // does not accidentally inflate the automatic suffix copy.
+        for (const auto& extra : gfxSyncMemRanges)
+        {
+            if ((extra.flags & kGfxSyncToGfx) == 0u)
+                continue;
+
+            rangeCount = appendGfxMirrorRange (ranges,
+                                               rangeCount,
+                                               extra.base,
+                                               extra.count,
+                                               st.memN);
+
+            if (extra.base >= 0 && extra.count > 0)
+            {
+                b.logicalMemN = std::max<int64_t> (
+                    b.logicalMemN,
+                    std::min<int64_t> (st.memN, gfxSafeEndExclusive (extra.base, extra.count)));
+            }
+        }
+
+        rangeCount = sortAndMergeGfxMirrorRanges (ranges, rangeCount);
+
+        for (int i = 0; i < rangeCount && b.memSpanCount < (int) b.memSpans.size(); ++i)
         {
             const auto& r = ranges[(size_t) i];
-            if (r.count <= 0)
+
+            if (r.count <= 0 || r.base < 0 || r.base >= st.memN)
+                continue;
+
+            const int count = (int) std::min<int64_t> ((int64_t) r.count,
+                                                       st.memN - r.base);
+
+            if (count <= 0)
                 continue;
 
             auto& span = b.memSpans[(size_t) b.memSpanCount];
             span.base = r.base;
-            span.count = r.count;
+            span.count = count;
 
-            if (span.data.capacity() < (size_t) r.count)
-                span.data.reserve ((size_t) r.count);
-            if ((int) span.data.size() != r.count)
-                span.data.resize ((size_t) r.count, 0.0);
+            if (span.data.capacity() < (size_t) count)
+                span.data.reserve ((size_t) count);
 
-            std::memcpy (span.data.data(), st.mem + r.base, sizeof (double) * (size_t) r.count);
+            if ((int) span.data.size() != count)
+                span.data.resize ((size_t) count, 0.0);
+
+            std::memcpy (span.data.data(), st.mem + r.base, sizeof (double) * (size_t) count);
             ++b.memSpanCount;
         }
     }
@@ -7842,6 +8087,7 @@ std::array<GfxSnapshot, 3> gfxSnaps {};
     int64_t gfxSnapPeriodSamples = 0;
     int64_t gfxSnapCountdown = 0;
     int64_t jsfxDeclaredMaxMem = 0;
+    std::vector<GfxSyncMemRange> gfxSyncMemRanges;
     double smartIdleTailLengthSeconds = 0.0;
     SmartIdleConfig smartIdleConfig {};
     SmartIdleRuntimeState smartIdleRuntime {};
@@ -12698,7 +12944,7 @@ private:
                 effectiveSliders[(size_t) i] = uiSliderOverrideValues[(size_t) i];
         }
 
-        std::array<jsfx_gfx::MemSpanView, 2> snapMemSpans {};
+        std::array<jsfx_gfx::MemSpanView, kMaxGfxMemSpans> snapMemSpans {};
 
         jsfx_gfx::Interpreter::Snapshot s;
         s.sliders = effectiveSliders.data();
@@ -12713,7 +12959,7 @@ private:
         s.mem = nullptr;
         s.memN = 0;
 
-        for (int i = 0; i < snap->memSpanCount; ++i)
+        for (int i = 0; i < snap->memSpanCount && s.memSpanCount < (int) snapMemSpans.size(); ++i)
         {
             const auto& srcSpan = snap->memSpans[(size_t) i];
             if (srcSpan.count <= 0 || srcSpan.data.empty())
@@ -13088,7 +13334,7 @@ private:
     juce::Image workerCanvas;
     std::vector<double> varsBefore;
     std::vector<double> varsAfter;
-    std::array<MemDiffSpan, 2> memDiffSpans {};
+    std::array<MemDiffSpan, kMaxGfxMemSpans> memDiffSpans {};
     int memDiffSpanCount = 0;
 
     std::array<double, 64> vmSliders {};
