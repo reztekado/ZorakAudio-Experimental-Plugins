@@ -1,7 +1,8 @@
-desc:Load-and-Go Psycho MultiSampler (FluxBridge + tape + hybrid + granular v24-posteq-qfix)
+desc:Load-and-Go Psycho MultiSampler (FluxBridge + tape + hybrid + granular v25-bandq-calibrated)
 tags:instrument sampler ui
 // #GFX_RESIZE: responsive
 
+// v25 BandQCal: Band 1/2/3 Q is calibrated to the actual peaking-biquad response; default Q is tighter and less absurdly wide.
 // v24 PostEQ QFix: HPF/LPF Q now produces visible and audible cutoff resonance, including 6 dB/oct mode.
 // v23 FreeBand PostEQ: three free parametric bands plus HPF/LPF, graph control, Q/slope gestures, and spectrum underlay.
 // v22 PostEQ removed the Shaper page and kept Processing as final-output EQ.
@@ -21,6 +22,7 @@ filename:0,sample.wav
 // #HELP: v16 FocusCal makes Focus bank-aware: high attack-focus banks soften harder and clarify more cautiously; dull banks clarify harder and soften more cautiously.
 // #HELP: v18 strengthens Shift+drag Pitch formant shifting: audible spectral-envelope warp plus resonance drive, still transient-protected.
 // #HELP: v19 AutoRelease analyzes each sample tail, extends too-short MIDI releases when needed, and fades source endings so EOF does not chop.
+// #HELP: v25 BandQCal makes Band 1/2/3 Q use the actual peaking-EQ response and changes the default from ultra-wide to generous.
 // #HELP: v24 PostEQ QFix makes HPF/LPF Q visible and audible as cutoff resonance.
 // #HELP: v23 FreeBand PostEQ adds a spectrum-underlaid final EQ: HPF, LPF, and three draggable parametric bands with Q and cutoff slope control.
 // #HELP:
@@ -95,9 +97,9 @@ slider36:950<20,20000,1>--EQ Band 2 Freq (Hz)
 slider37:6500<20,20000,1>--EQ Band 3 Freq (Hz)
 slider38:20<20,1000,1>--EQ HPF (Hz)
 slider39:20000<1000,20000,1>--EQ LPF (Hz)
-slider40:0.75<0.15,12,0.01>--EQ Band 1 Q
-slider41:0.75<0.15,12,0.01>--EQ Band 2 Q
-slider42:0.75<0.15,12,0.01>--EQ Band 3 Q
+slider40:1.15<0.35,8,0.01>--EQ Band 1 Q
+slider41:1.15<0.35,8,0.01>--EQ Band 2 Q
+slider42:1.15<0.35,8,0.01>--EQ Band 3 Q
 slider43:1<0,4,1{6,12,24,36,48}>--EQ HPF Slope
 slider44:1<0,4,1{6,12,24,36,48}>--EQ LPF Slope
 slider45:0.707<0.35,4,0.001>--EQ HPF Q
@@ -2284,7 +2286,7 @@ function posteq_bq_set_peak(slot freq q gain_db) local(base A w0 sn cs alpha a0 
     posteq_bq_identity(slot);
   ) : (
     freq = clamp(freq, 20, min(20000, srate * 0.49));
-    q = clamp(q, 0.15, 12);
+    q = clamp(q, 0.35, 8);
     A = exp(gain_db * 0.05756462732485114); // 10^(dB/40)
     w0 = 6.283185307179586 * freq / max(srate, 1);
     sn = sin(w0);
@@ -4287,14 +4289,43 @@ function proc_y_db(my y h) local(n)
   clamp(18 - n * 36, -18, 18);
 );
 
-function proc_band_resp(freq cf q gain_db) local(d width w)
+function proc_band_resp(freq cf q gain_db) local(
+  A w0 sn cs alpha a0 b0 b1 b2 a1 a2
+  w c1 s1 c2 s2 nre nim dre dim mag2
+)
 (
-  cf = max(20, cf);
-  q = clamp(q, 0.15, 12);
-  d = log(max(20, freq) / cf);
-  width = max(0.045, 1.15 / q);
-  w = exp(-(d * d) / max(0.000001, 2 * width * width));
-  gain_db * w;
+  // Match the DSP peaking biquad instead of drawing an over-wide Gaussian.
+  // The old graph made Q0.75 look like it affected nearly the entire spectrum.
+  abs(gain_db) < 0.000001 ? 0 : (
+    cf = clamp(cf, 20, min(20000, srate * 0.49));
+    q = clamp(q, 0.35, 8);
+    A = exp(gain_db * 0.05756462732485114); // 10^(dB/40)
+    w0 = 6.283185307179586 * cf / max(srate, 1);
+    sn = sin(w0);
+    cs = cos(w0);
+    alpha = sn / max(0.000001, 2 * q);
+
+    b0 = 1 + alpha * A;
+    b1 = -2 * cs;
+    b2 = 1 - alpha * A;
+    a0 = 1 + alpha / A;
+    a1 = -2 * cs;
+    a2 = 1 - alpha / A;
+
+    b0 /= a0; b1 /= a0; b2 /= a0; a1 /= a0; a2 /= a0;
+
+    w = 6.283185307179586 * clamp(freq, 20, min(20000, srate * 0.49)) / max(srate, 1);
+    c1 = cos(w); s1 = sin(w);
+    c2 = cos(2 * w); s2 = sin(2 * w);
+
+    nre = b0 + b1 * c1 + b2 * c2;
+    nim = -(b1 * s1 + b2 * s2);
+    dre = 1 + a1 * c1 + a2 * c2;
+    dim = -(a1 * s1 + a2 * s2);
+
+    mag2 = (nre * nre + nim * nim) / max(0.000000000001, dre * dre + dim * dim);
+    10 * log(max(0.000000000001, mag2)) * LOG10_INV;
+  );
 );
 
 function proc_cut_slope_db(idx)
@@ -4306,9 +4337,9 @@ function proc_eq_resp_db(freq) local(resp hpfhz lpfhz slope r octv)
 (
   // UI response reads sliders directly so graph movement is immediate.
   resp = 0;
-  resp += proc_band_resp(freq, clamp(slider35, 20, 20000), clamp(slider40, 0.15, 12), clamp(slider32, -18, 18));
-  resp += proc_band_resp(freq, clamp(slider36, 20, 20000), clamp(slider41, 0.15, 12), clamp(slider33, -18, 18));
-  resp += proc_band_resp(freq, clamp(slider37, 20, 20000), clamp(slider42, 0.15, 12), clamp(slider34, -18, 18));
+  resp += proc_band_resp(freq, clamp(slider35, 20, 20000), clamp(slider40, 0.35, 8), clamp(slider32, -18, 18));
+  resp += proc_band_resp(freq, clamp(slider36, 20, 20000), clamp(slider41, 0.35, 8), clamp(slider33, -18, 18));
+  resp += proc_band_resp(freq, clamp(slider37, 20, 20000), clamp(slider42, 0.35, 8), clamp(slider34, -18, 18));
 
   hpfhz = clamp(slider38, 20, 1000);
   hpfhz > 22 ? (
@@ -4779,6 +4810,7 @@ push_side_rel_coeff = 0.001;
 
 formant_shift_semi = 0;
 auto_release_amt = 1;
+posteq_q_schema = 0;
 proc_eq_band1_db = 0;
 proc_eq_band2_db = 0;
 proc_eq_band3_db = 0;
@@ -4871,6 +4903,7 @@ m2e_reset();
 file_var(0, slope_schema);
 file_var(0, formant_shift_semi);
 file_var(0, auto_release_amt);
+file_var(0, posteq_q_schema);
 
 @slider
 attack_samps = max(1, floor(slider2 * srate * 0.001));
@@ -4890,6 +4923,23 @@ push_amt = clamp01(slider27 / 100);
   slope_schema = 1;
   sliderchange(MASK_S28 + MASK_S29 + MASK_S30);
 );
+(posteq_q_schema < 0.5) ? (
+  // v25 migration: the old Band Q default was 0.75 and the UI graph overstated
+  // its width. If a band is still at that untouched default, move it to the new
+  // generous-but-controlled default. User-edited Q values are preserved.
+  posteq_q_mask = 0;
+  abs(slider40 - 0.75) < 0.0001 ? (slider40 = 1.15; posteq_q_mask += MASK_S40;);
+  abs(slider41 - 0.75) < 0.0001 ? (slider41 = 1.15; posteq_q_mask += MASK_S41;);
+  abs(slider42 - 0.75) < 0.0001 ? (slider42 = 1.15; posteq_q_mask += MASK_S42;);
+  posteq_q_schema = 1;
+  posteq_q_mask ? sliderchange(posteq_q_mask);
+);
+posteq_clamp_mask = 0;
+slider40 != clamp(slider40, 0.35, 8) ? (slider40 = clamp(slider40, 0.35, 8); posteq_clamp_mask += MASK_S40;);
+slider41 != clamp(slider41, 0.35, 8) ? (slider41 = clamp(slider41, 0.35, 8); posteq_clamp_mask += MASK_S41;);
+slider42 != clamp(slider42, 0.35, 8) ? (slider42 = clamp(slider42, 0.35, 8); posteq_clamp_mask += MASK_S42;);
+posteq_clamp_mask ? sliderchange(posteq_clamp_mask);
+
 attack_slope_pct = clamp(slider28, -100, 100);
 decay_slope_pct = clamp(slider29, -100, 100);
 release_slope_pct = clamp(slider30, -100, 100);
@@ -4917,9 +4967,9 @@ proc_eq_band2_hz = clamp(slider36, 20, 20000);
 proc_eq_band3_hz = clamp(slider37, 20, 20000);
 proc_hpf_hz = clamp(slider38, 20, 1000);
 proc_lpf_hz = clamp(slider39, 1000, 20000);
-proc_eq_band1_q = clamp(slider40, 0.15, 12);
-proc_eq_band2_q = clamp(slider41, 0.15, 12);
-proc_eq_band3_q = clamp(slider42, 0.15, 12);
+proc_eq_band1_q = clamp(slider40, 0.35, 8);
+proc_eq_band2_q = clamp(slider41, 0.35, 8);
+proc_eq_band3_q = clamp(slider42, 0.35, 8);
 proc_hpf_slope_idx = clamp(slider43 | 0, 0, 4);
 proc_lpf_slope_idx = clamp(slider44 | 0, 0, 4);
 proc_hpf_q = clamp(slider45, 0.35, 4.0);
@@ -7002,22 +7052,22 @@ hot_lpf_ctl = hot_lpf || pt_in(proc_inner_x + 4 * (pre_card_w + pre_card_gap), p
 // Right-click reset.
 mouse_rpressed && hot_hpf_ctl ? (slider38 = 20; slider43 = 1; slider45 = 0.707; gfx_slider_mask |= MASK_S38 + MASK_S43 + MASK_S45;);
 mouse_rpressed && hot_lpf_ctl ? (slider39 = 20000; slider44 = 1; slider46 = 0.707; gfx_slider_mask |= MASK_S39 + MASK_S44 + MASK_S46;);
-mouse_rpressed && hot_b1_ctl ? (slider35 = 120; slider32 = 0; slider40 = 0.75; gfx_slider_mask |= MASK_S35 + MASK_S32 + MASK_S40;);
-mouse_rpressed && hot_b2_ctl ? (slider36 = 950; slider33 = 0; slider41 = 0.75; gfx_slider_mask |= MASK_S36 + MASK_S33 + MASK_S41;);
-mouse_rpressed && hot_b3_ctl ? (slider37 = 6500; slider34 = 0; slider42 = 0.75; gfx_slider_mask |= MASK_S37 + MASK_S34 + MASK_S42;);
+mouse_rpressed && hot_b1_ctl ? (slider35 = 120; slider32 = 0; slider40 = 1.15; gfx_slider_mask |= MASK_S35 + MASK_S32 + MASK_S40;);
+mouse_rpressed && hot_b2_ctl ? (slider36 = 950; slider33 = 0; slider41 = 1.15; gfx_slider_mask |= MASK_S36 + MASK_S33 + MASK_S41;);
+mouse_rpressed && hot_b3_ctl ? (slider37 = 6500; slider34 = 0; slider42 = 1.15; gfx_slider_mask |= MASK_S37 + MASK_S34 + MASK_S42;);
 
 // Wheel: Q for all nodes. Shift+Wheel: cutoff slope for HPF/LPF.
 (!ui_wheel_used && abs(ui_wheel) >= 1) ? (
   wdir = ui_wheel > 0 ? 1 : -1;
   wsteps = max(1, floor(abs(ui_wheel) / 120 + 0.5));
   hot_b1_ctl ? (
-    slider40 = clamp(slider40 * exp(wdir * wsteps * 0.115), 0.15, 12);
+    slider40 = clamp(slider40 * exp(wdir * wsteps * 0.085), 0.35, 8);
     gfx_slider_mask |= MASK_S40; ui_wheel_used = 1;
   ) : hot_b2_ctl ? (
-    slider41 = clamp(slider41 * exp(wdir * wsteps * 0.115), 0.15, 12);
+    slider41 = clamp(slider41 * exp(wdir * wsteps * 0.085), 0.35, 8);
     gfx_slider_mask |= MASK_S41; ui_wheel_used = 1;
   ) : hot_b3_ctl ? (
-    slider42 = clamp(slider42 * exp(wdir * wsteps * 0.115), 0.15, 12);
+    slider42 = clamp(slider42 * exp(wdir * wsteps * 0.085), 0.35, 8);
     gfx_slider_mask |= MASK_S42; ui_wheel_used = 1;
   ) : hot_hpf_ctl ? (
     ui_shift ? (
@@ -7402,15 +7452,15 @@ ui_hover_id == PROC_EQ_HPF_ID ? (
 );
 ui_hover_id == PROC_EQ_B1_ID ? (
   sprintf(#tip_title, "Band 1");
-  sprintf(#tip_body, "%.0f Hz, %+.1f dB, Q %.2f. Drag frequency/gain; wheel Q; right-click resets.", slider35, slider32, slider40);
+  sprintf(#tip_body, "%.0f Hz, %+.1f dB, Q %.2f. Drag frequency/gain; wheel Q. Default Q 1.15; right-click resets.", slider35, slider32, slider40);
 );
 ui_hover_id == PROC_EQ_B2_ID ? (
   sprintf(#tip_title, "Band 2");
-  sprintf(#tip_body, "%.0f Hz, %+.1f dB, Q %.2f. Drag frequency/gain; wheel Q; right-click resets.", slider36, slider33, slider41);
+  sprintf(#tip_body, "%.0f Hz, %+.1f dB, Q %.2f. Drag frequency/gain; wheel Q. Default Q 1.15; right-click resets.", slider36, slider33, slider41);
 );
 ui_hover_id == PROC_EQ_B3_ID ? (
   sprintf(#tip_title, "Band 3");
-  sprintf(#tip_body, "%.0f Hz, %+.1f dB, Q %.2f. Drag frequency/gain; wheel Q; right-click resets.", slider37, slider34, slider42);
+  sprintf(#tip_body, "%.0f Hz, %+.1f dB, Q %.2f. Drag frequency/gain; wheel Q. Default Q 1.15; right-click resets.", slider37, slider34, slider42);
 );
 ui_hover_id == PROC_EQ_LPF_ID ? (
   sprintf(#tip_title, "LPF");

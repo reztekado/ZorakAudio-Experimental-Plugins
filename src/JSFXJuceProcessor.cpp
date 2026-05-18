@@ -2009,6 +2009,12 @@ public:
         int64_t addedUtcMs = 0;
     };
 
+    struct ImportPreviewAuditionClip
+    {
+        juce::AudioBuffer<float> buffer;
+        int position = 0;
+    };
+
     struct CachedFileData
     {
         bool isText = false;
@@ -2923,6 +2929,10 @@ public:
 
         jsfx_process_block (&st, numCh > 0 ? inPtrs.data() : nullptr, numCh > 0 ? outPtrs.data() : nullptr, numCh, numSamples);
 
+#if ! ((DSPJSFX_NUM_INPUTS == 0) && (DSPJSFX_NUM_OUTPUTS == 0))
+        mixQueuedImportPreviewAudition (numCh > 0 ? outPtrs.data() : nullptr, activityOutputChannels, numSamples);
+#endif
+
         const bool dspSliderActivity = (st.pendingSliderChangeMask != 0)
                                     || (st.pendingSliderAutomateMask != 0)
                                     || (st.pendingSliderAutomateEndMask != 0);
@@ -3120,6 +3130,65 @@ public:
 
     juce::AudioProcessorValueTreeState& getApvts() noexcept { return *apvts; }
     const juce::AudioProcessorValueTreeState& getApvts() const noexcept { return *apvts; }
+
+    void auditionImportPreviewBuffer (juce::AudioBuffer<float> buffer, double sourceSampleRate)
+    {
+        if (buffer.getNumSamples() <= 0 || buffer.getNumChannels() <= 0)
+            return;
+
+        const double targetRate = getSampleRate() > 1000.0 ? getSampleRate() : (st.srate > 1000.0 ? st.srate : sourceSampleRate);
+        if (sourceSampleRate > 1000.0 && targetRate > 1000.0 && std::abs (sourceSampleRate - targetRate) > 1.0)
+        {
+            const int srcN = buffer.getNumSamples();
+            const int srcCh = buffer.getNumChannels();
+            const int dstN = juce::jmax (1, (int) std::llround ((double) srcN * targetRate / sourceSampleRate));
+            juce::AudioBuffer<float> resampled (srcCh, dstN);
+
+            for (int ch = 0; ch < srcCh; ++ch)
+            {
+                const auto* src = buffer.getReadPointer (ch);
+                auto* dst = resampled.getWritePointer (ch);
+                for (int i = 0; i < dstN; ++i)
+                {
+                    const double srcPos = (double) i * sourceSampleRate / targetRate;
+                    const int i0 = juce::jlimit (0, srcN - 1, (int) std::floor (srcPos));
+                    const int i1 = juce::jmin (i0 + 1, srcN - 1);
+                    const float frac = (float) (srcPos - (double) i0);
+                    dst[i] = src[i0] + (src[i1] - src[i0]) * frac;
+                }
+            }
+
+            buffer = std::move (resampled);
+        }
+
+        importPreviewAuditionStopRequested.store (false, std::memory_order_release);
+
+        auto clip = std::make_unique<ImportPreviewAuditionClip>();
+        clip->buffer = std::move (buffer);
+        clip->position = 0;
+
+        {
+            std::lock_guard<std::mutex> lk (importPreviewAuditionMutex);
+            pendingImportPreviewAudition = std::move (clip);
+            importPreviewAuditionPending.store (true, std::memory_order_release);
+        }
+
+        pendingExternalWakeEvent.store (true, std::memory_order_release);
+        updateHostDisplay();
+    }
+
+    void stopImportPreviewAudition()
+    {
+        {
+            std::lock_guard<std::mutex> lk (importPreviewAuditionMutex);
+            pendingImportPreviewAudition.reset();
+            importPreviewAuditionPending.store (false, std::memory_order_release);
+        }
+
+        importPreviewAuditionStopRequested.store (true, std::memory_order_release);
+        pendingExternalWakeEvent.store (true, std::memory_order_release);
+        updateHostDisplay();
+    }
 
     juce::String getStringSliderText (int index0) const
     {
@@ -5133,6 +5202,58 @@ public:
     }
 
 private:
+    void mixQueuedImportPreviewAudition (float* const* outputChannels, int numOutputChannels, int numSamples)
+    {
+        if (importPreviewAuditionStopRequested.exchange (false, std::memory_order_acq_rel))
+            activeImportPreviewAudition.reset();
+
+        if (numSamples <= 0 || outputChannels == nullptr || numOutputChannels <= 0)
+            return;
+
+        if (importPreviewAuditionPending.load (std::memory_order_acquire))
+        {
+            if (importPreviewAuditionMutex.try_lock())
+            {
+                if (pendingImportPreviewAudition != nullptr)
+                    activeImportPreviewAudition = std::move (pendingImportPreviewAudition);
+
+                importPreviewAuditionPending.store (false, std::memory_order_release);
+                importPreviewAuditionMutex.unlock();
+            }
+        }
+
+        if (activeImportPreviewAudition == nullptr)
+            return;
+
+        auto& clip = *activeImportPreviewAudition;
+        const int sourceSamples = clip.buffer.getNumSamples();
+        const int sourceChannels = clip.buffer.getNumChannels();
+        if (sourceSamples <= 0 || sourceChannels <= 0 || clip.position >= sourceSamples)
+        {
+            activeImportPreviewAudition.reset();
+            return;
+        }
+
+        const int todo = juce::jmin (numSamples, sourceSamples - clip.position);
+        constexpr float auditionGain = 0.85f;
+
+        for (int outCh = 0; outCh < numOutputChannels; ++outCh)
+        {
+            auto* dst = outputChannels[outCh];
+            if (dst == nullptr)
+                continue;
+
+            const int srcCh = sourceChannels == 1 ? 0 : juce::jmin (outCh, sourceChannels - 1);
+            const auto* src = clip.buffer.getReadPointer (srcCh, clip.position);
+            for (int i = 0; i < todo; ++i)
+                dst[i] += src[i] * auditionGain;
+        }
+
+        clip.position += todo;
+        if (clip.position >= sourceSamples)
+            activeImportPreviewAudition.reset();
+    }
+
     static constexpr int kMaxRecentFiles = 10;
 
     using SavedFileSlotSelection = FileSelectionState;
@@ -7712,6 +7833,11 @@ std::array<GfxSnapshot, 3> gfxSnaps {};
     std::atomic<int> gfxSnapReading { -1 };
     std::atomic<int> gfxSnapshotUsers { 0 };
     std::atomic<bool> gfxSnapshotForcePublish { false };
+    std::mutex importPreviewAuditionMutex;
+    std::unique_ptr<ImportPreviewAuditionClip> pendingImportPreviewAudition;
+    std::unique_ptr<ImportPreviewAuditionClip> activeImportPreviewAudition;
+    std::atomic<bool> importPreviewAuditionPending { false };
+    std::atomic<bool> importPreviewAuditionStopRequested { false };
     std::atomic<bool> pendingExternalWakeEvent { false };
     int64_t gfxSnapPeriodSamples = 0;
     int64_t gfxSnapCountdown = 0;
@@ -9198,6 +9324,16 @@ private:
             {
                 if (safeThis != nullptr)
                     safeThis->renderImportActionForFileSlotAsync (slot, std::move (filesForApply), action, acceptedRules);
+            },
+            [safeThis] (juce::AudioBuffer<float> buffer, double sampleRate) mutable
+            {
+                if (safeThis != nullptr)
+                    safeThis->proc.auditionImportPreviewBuffer (std::move (buffer), sampleRate);
+            },
+            [safeThis]
+            {
+                if (safeThis != nullptr)
+                    safeThis->proc.stopImportPreviewAudition();
             });
     }
 
@@ -9238,6 +9374,16 @@ private:
             {
                 if (safeThis != nullptr)
                     safeThis->renderImportActionForFileSlotAsync (slot, std::move (filesForApply), action, acceptedRules);
+            },
+            [safeThis] (juce::AudioBuffer<float> buffer, double sampleRate) mutable
+            {
+                if (safeThis != nullptr)
+                    safeThis->proc.auditionImportPreviewBuffer (std::move (buffer), sampleRate);
+            },
+            [safeThis]
+            {
+                if (safeThis != nullptr)
+                    safeThis->proc.stopImportPreviewAudition();
             });
     }
 
@@ -9369,6 +9515,7 @@ private:
             kPasteClipboardMenuId = 4,
             kAutoSegmentCurrentMenuId = 5,
             kEditCurrentRecipeMenuId = 6,
+            kModifyCurrentMenuId = 7,
             kFirstDynamicMenuId = 100,
         };
 
@@ -9598,6 +9745,7 @@ private:
         addRecipeImportItem ("Segment Then Build Mega Texture...", za::fileimport::ImportAction::SegmentThenMegaTexture);
         menu.addItem (kPasteClipboardMenuId, "Paste Files / URIs from Clipboard...");
         menu.addItem (kAutoSegmentCurrentMenuId, "Auto-Segment Current Selection...", hasSelection);
+        menu.addItem (kModifyCurrentMenuId, "Modify Current Selection...", hasSelection);
         menu.addItem (kEditCurrentRecipeMenuId, "Edit Current Import Recipe...", hasImportRecipe);
 
         menu.addSeparator();
@@ -9676,6 +9824,13 @@ private:
                                 {
                                     auto currentFiles = safeThis->sourceFilesFromSelectionOrRecipe (currentSelection);
                                     safeThis->startImportActionForFileSlot (slot, std::move (currentFiles), za::fileimport::ImportAction::SegmentLongFile);
+                                    return;
+                                }
+
+                                if (result == kModifyCurrentMenuId)
+                                {
+                                    auto currentFiles = safeThis->sourceFilesFromSelectionOrRecipe (currentSelection);
+                                    safeThis->startImportActionForFileSlot (slot, std::move (currentFiles), za::fileimport::ImportAction::ModifyExisting);
                                     return;
                                 }
 
@@ -10435,6 +10590,16 @@ public:
             {
                 if (safeThis != nullptr)
                     safeThis->renderImportActionAsync (slot, std::move (filesForApply), action, acceptedRules);
+            },
+            [safeThis] (juce::AudioBuffer<float> buffer, double sampleRate) mutable
+            {
+                if (safeThis != nullptr)
+                    safeThis->processor.auditionImportPreviewBuffer (std::move (buffer), sampleRate);
+            },
+            [safeThis]
+            {
+                if (safeThis != nullptr)
+                    safeThis->processor.stopImportPreviewAudition();
             });
     }
 
